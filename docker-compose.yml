@@ -1,0 +1,266 @@
+###############################################################################
+# E-commerce Platform — development stack
+#
+# Bring up:   docker compose up -d --build
+# Entry point: http://localhost:8080  (Nginx fronts both tiers)
+#
+# Direct ports are also published for debugging individual services, but the
+# canonical URL is the Nginx edge — it is the only origin that mirrors the
+# production routing, so CORS behaves identically there.
+###############################################################################
+
+name: ecommerce
+
+x-php-common: &php-common
+  build:
+    context: .
+    dockerfile: docker/php/Dockerfile
+    target: development
+    args:
+      UID: ${UID:-1000}
+      GID: ${GID:-1000}
+  working_dir: /var/www/html
+  volumes:
+    - ./backend:/var/www/html:cached
+    # Anonymous volume keeps vendor/ inside the container, so a host without
+    # PHP installed does not shadow it with an empty directory.
+    - backend_vendor:/var/www/html/vendor
+  env_file:
+    - ./backend/.env
+  # Provides host.docker.internal on Linux, where it is not built in.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  networks:
+    - ecommerce
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+
+  #############################################################################
+  # Nginx — single edge for API, admin panel, and storefront
+  #############################################################################
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: ecommerce_nginx
+    ports:
+      - "${NGINX_PORT:-8080}:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Nginx serves static files and /storage directly from the same tree
+      # PHP-FPM sees, so it needs the backend mounted too.
+      - ./backend:/var/www/html:cached
+    depends_on:
+      php:
+        condition: service_started
+      frontend:
+        condition: service_started
+    networks:
+      - ecommerce
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  #############################################################################
+  # PHP-FPM — Laravel API and admin panel
+  #############################################################################
+  php:
+    <<: *php-common
+    container_name: ecommerce_php
+    restart: unless-stopped
+
+  #############################################################################
+  # Queue worker
+  #
+  # Separate container from FPM: a worker is a long-lived process and must not
+  # compete with request handling for FPM worker slots.
+  #############################################################################
+  queue:
+    <<: *php-common
+    container_name: ecommerce_queue
+    # --max-time recycles the process hourly, bounding any memory growth in a
+    # long-running PHP process. Queues are consumed in priority order.
+    command: php artisan queue:work redis --queue=high,default,notifications,low --tries=3 --backoff=5 --max-time=3600 --sleep=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "queue:work"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  #############################################################################
+  # Scheduler
+  #
+  # `schedule:work` is a foreground loop that dispatches due tasks each minute
+  # — the container-native replacement for a crontab entry.
+  #############################################################################
+  scheduler:
+    <<: *php-common
+    container_name: ecommerce_scheduler
+    command: php artisan schedule:work
+    restart: unless-stopped
+
+  #############################################################################
+  # Next.js storefront
+  #############################################################################
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    container_name: ecommerce_frontend
+    working_dir: /app
+    volumes:
+      - ./frontend:/app:cached
+      # Anonymous volumes: node_modules is platform-specific and .next is
+      # build output — both must stay inside the container.
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    env_file:
+      - ./frontend/.env.local
+    environment:
+      # Server-side calls go over the Docker network directly to PHP-FPM's
+      # Nginx, skipping the host round-trip.
+      INTERNAL_API_URL: http://nginx/api/v1
+      WATCHPACK_POLLING: "true"
+    depends_on:
+      php:
+        condition: service_started
+    networks:
+      - ecommerce
+    restart: unless-stopped
+
+  #############################################################################
+  # MySQL
+  #############################################################################
+  mysql:
+    image: mysql:8.0
+    container_name: ecommerce_mysql
+    command: --default-authentication-plugin=caching_sha2_password
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-ecommerce}
+      MYSQL_USER: ${DB_USERNAME:-ecommerce}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-secret}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootsecret}
+    ports:
+      - "${DB_PORT_FORWARD:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/my.cnf:/etc/mysql/conf.d/custom.cnf:ro
+    networks:
+      - ecommerce
+    restart: unless-stopped
+    healthcheck:
+      # Authenticated ping: mysqladmin ping succeeds during init before the
+      # database is actually usable, which would let migrations start too early.
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-rootsecret}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  #############################################################################
+  # Redis — cache (DB 0), sessions (DB 1), queues (DB 2)
+  #############################################################################
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce_redis
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "${REDIS_PORT_FORWARD:-6380}:6379"
+    volumes:
+      - redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - ecommerce
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  #############################################################################
+  # MinIO — S3-compatible object storage for admin-uploaded assets
+  #############################################################################
+  minio:
+    image: minio/minio:latest
+    container_name: ecommerce_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9002}:9000"
+      - "${MINIO_CONSOLE_PORT:-9003}:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - ecommerce
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # One-shot: creates the bucket and makes it publicly readable, so brand
+  # assets resolve in a browser without signed URLs.
+  minio_init:
+    image: minio/mc:latest
+    container_name: ecommerce_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${AWS_ACCESS_KEY_ID:-minioadmin} ${AWS_SECRET_ACCESS_KEY:-minioadmin} &&
+      mc mb --ignore-existing local/${AWS_BUCKET:-ecommerce} &&
+      mc anonymous set download local/${AWS_BUCKET:-ecommerce} &&
+      echo 'MinIO bucket ready.'
+      "
+    networks:
+      - ecommerce
+    restart: "no"
+
+  #############################################################################
+  # Mailpit — captures outbound mail in development
+  #############################################################################
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: ecommerce_mailpit
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    networks:
+      - ecommerce
+    restart: unless-stopped
+
+networks:
+  ecommerce:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:
+  backend_vendor:
+  frontend_node_modules:
+  frontend_next:
