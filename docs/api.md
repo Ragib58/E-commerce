@@ -126,7 +126,7 @@ social links, SEO defaults, and feature flags.
 
 | Name | Type | Notes |
 |---|---|---|
-| `group` | string | Optional. One of `general`, `branding`, `theme`, `contact`, `social`, `seo`, `feature` |
+| `group` | string | Optional. One of `general`, `branding`, `theme`, `contact`, `social`, `seo`, `analytics`, `business`, `feature` |
 
 Requesting a non-public group (`payment`, `shipping`, `mail`) returns `422`
 rather than an empty result — a clearer contract, and one less way to probe
@@ -145,25 +145,138 @@ real booleans, not `"1"`. Image settings are expanded to absolute URLs.
   "success": true,
   "message": "Settings retrieved successfully.",
   "data": {
-    "general": { "company_name": "Nexus Commerce", "currency": "USD",
-                 "maintenance_mode": false },
-    "branding": { "logo": "http://localhost:8080/storage/branding/logo.svg",
-                  "favicon": null },
-    "theme": { "primary_color": "#2563eb", "radius": "0.5rem" },
-    "contact": { "email": "support@example.com" },
-    "social": { "instagram": null },
-    "seo": { "meta_title": "...", "indexable": true },
+    "general": { "company_name": "Nexus Commerce", "tagline": "...",
+                 "locale": "en", "maintenance_mode": false },
+    "branding": { "logo": "http://localhost:8080/storage/branding/logo-a1b2.svg",
+                  "logo_light": null, "logo_dark": null, "favicon": null,
+                  "og_image": null, "brand_description": "..." },
+    "theme": { "primary_color": "#2563eb", "secondary_color": "#64748b",
+               "accent_color": "#f59e0b", "background_color": "#ffffff",
+               "foreground_color": "#0f172a", "button_color": "#2563eb",
+               "destructive_color": "#dc2626", "radius": "0.5rem",
+               "font_family": "Inter" },
+    "contact": { "email": "support@example.com", "phone": "+1 (555) 010-0100",
+                 "address": "...", "google_maps_url": null },
+    "social": { "facebook": null, "instagram": null, "x": null,
+                "linkedin": null, "youtube": null, "tiktok": null },
+    "seo": { "website_title": "Nexus Commerce", "meta_title": "...",
+             "meta_description": "...", "meta_keywords": "...",
+             "indexable": true },
+    "analytics": { "google_analytics_id": null, "facebook_pixel_id": null },
+    "business": { "currency": "USD", "currency_symbol": "$", "tax_rate": 0,
+                  "vat_rate": 0, "order_prefix": "ORD-",
+                  "invoice_prefix": "INV-" },
     "feature": { "wishlist_enabled": true }
   },
   "meta": {
     "version": "7",
-    "groups": ["general", "branding", "theme", "contact", "social", "seo", "feature"]
+    "groups": ["general", "branding", "theme", "contact", "social", "seo",
+               "analytics", "business", "feature"]
   }
 }
 ```
 
 `meta.version` increments on every settings change. Clients key their cache on
 it, so a change produces a new cache key and stale branding cannot be served.
+
+**Why analytics IDs are public.** A GA measurement ID or Facebook Pixel ID is
+visible in the page source of every site that uses one — they identify a
+property, they do not authenticate to it. They live here rather than in `.env`
+so marketing can change them without a deploy.
+
+---
+
+## Admin settings management
+
+Base path `/admin/settings`. Every route requires a valid admin token, an active
+account, a current password, and a permission:
+
+| Operation | Permission |
+|---|---|
+| Read | `view_settings` **or** `manage_settings` |
+| Write, upload, flush | `manage_settings` |
+
+Unlike `/settings/public`, this surface exposes **private groups** (`mail`,
+`payment`, `shipping`), which is why it is permission-gated rather than merely
+authenticated.
+
+### `GET /admin/settings`
+
+Every setting, grouped, with the metadata needed to render an edit form —
+label, description, type, lock flag. Narrow with `?group=theme`.
+
+```jsonc
+{
+  "data": {
+    "theme": {
+      "label": "Theme & Colours",
+      "description": "Brand and theme colours applied to the storefront.",
+      "icon": "swatch",
+      "is_public": true,
+      "settings": [
+        { "key": "theme.primary_color", "value": "#2563eb", "type": "color",
+          "type_label": "Colour", "label": "Primary Colour",
+          "description": "Buttons, links, and primary actions.",
+          "is_public": true, "is_locked": true, "sort_order": 1,
+          "updated_at": "2026-08-02T10:00:00+00:00" }
+      ]
+    }
+  },
+  "meta": { "version": "7", "groups": ["theme"] }
+}
+```
+
+File-backed settings carry an extra `path` field (the stored disk path) beside
+the resolved absolute `value`.
+
+### `GET /admin/settings/groups`
+
+The full group catalogue, for building a tab strip without hardcoding the list.
+
+### `PUT /admin/settings`
+
+Bulk update. Validation rules are derived from each setting's declared `type`,
+so a setting added at runtime is validated correctly with no code change.
+
+```json
+{ "settings": { "theme.primary_color": "#7c3aed",
+                "general.company_name": "Aurora Supply" } }
+```
+
+The **whole** submission is validated before anything is written — a single
+invalid colour cannot leave a half-applied theme. Unknown keys are rejected
+(`422`) rather than created; accepting them would turn this into an arbitrary
+settings-row factory, including rows in publicly exposed groups.
+
+### `POST /admin/settings/media/{key}`
+
+`multipart/form-data`, field `file`. Uploads a brand asset and points `{key}` at
+it, deleting any previous file. Rejected with `422` if `{key}` is not an
+image-typed setting — otherwise an upload could store a file path where the
+storefront expects a hex colour.
+
+Accepts `jpg, jpeg, png, webp, gif, svg, ico` up to `UPLOAD_MAX_IMAGE_KB`
+(default 4 MB). SVG is admitted deliberately: logos are commonly SVG, and
+Laravel's `image` rule alone would reject it.
+
+```json
+{ "data": { "key": "branding.logo",
+            "url": "http://localhost:8080/storage/branding/logo-a1b2c3.svg" } }
+```
+
+Typical keys: `branding.logo`, `branding.logo_light`, `branding.logo_dark`,
+`branding.favicon`, `branding.og_image`.
+
+### `DELETE /admin/settings/media/{key}`
+
+Clears the value and deletes the file. The row survives with `value = null` —
+the key is part of the seeded schema and the admin form still renders its field.
+
+### `POST /admin/settings/cache/flush`
+
+Drops every cached settings payload, bumps the version stamp, and revalidates
+the storefront. An escape hatch for when the table has been written to outside
+the service (a direct SQL fix, a restored backup).
 
 ---
 

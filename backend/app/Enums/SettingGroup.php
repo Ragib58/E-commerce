@@ -18,6 +18,8 @@ enum SettingGroup: string
     case Contact = 'contact';
     case Social = 'social';
     case Seo = 'seo';
+    case Analytics = 'analytics';
+    case Business = 'business';
     case Mail = 'mail';
     case Payment = 'payment';
     case Shipping = 'shipping';
@@ -31,7 +33,9 @@ enum SettingGroup: string
             self::Theme => 'Theme & Colours',
             self::Contact => 'Contact Information',
             self::Social => 'Social Media',
-            self::Seo => 'SEO',
+            self::Seo => 'SEO & Website',
+            self::Analytics => 'Analytics & Tracking',
+            self::Business => 'Business Rules',
             self::Mail => 'Mail',
             self::Payment => 'Payment',
             self::Shipping => 'Shipping',
@@ -47,11 +51,34 @@ enum SettingGroup: string
             self::Theme => 'Brand and theme colours applied to the storefront.',
             self::Contact => 'Address, phone numbers, and support email.',
             self::Social => 'Links to social media profiles.',
-            self::Seo => 'Default meta tags and indexing controls.',
+            self::Seo => 'Website title, meta tags, and indexing controls.',
+            self::Analytics => 'Third-party measurement tag identifiers.',
+            self::Business => 'Currency, tax rates, and document numbering.',
             self::Mail => 'Outbound mail sender identity.',
             self::Payment => 'Payment gateway configuration.',
             self::Shipping => 'Shipping rules and defaults.',
             self::Feature => 'Toggles for optional storefront features.',
+        };
+    }
+
+    /**
+     * Icon rendered beside the group in the admin panel's tab strip.
+     */
+    public function icon(): string
+    {
+        return match ($this) {
+            self::General => 'building-storefront',
+            self::Branding => 'photo',
+            self::Theme => 'swatch',
+            self::Contact => 'phone',
+            self::Social => 'share',
+            self::Seo => 'magnifying-glass',
+            self::Analytics => 'chart-bar',
+            self::Business => 'banknotes',
+            self::Mail => 'envelope',
+            self::Payment => 'credit-card',
+            self::Shipping => 'truck',
+            self::Feature => 'toggle',
         };
     }
 
@@ -72,6 +99,13 @@ enum SettingGroup: string
             self::Contact,
             self::Social,
             self::Seo,
+            // Measurement IDs are public by nature — a GA or Pixel tag is
+            // readable in the page source of any site that uses one. They are
+            // exposed so the storefront can inject the tags without a rebuild.
+            self::Analytics,
+            // Currency symbol and tax rate are needed to render prices; the
+            // order/invoice prefixes are not secret either.
+            self::Business,
             self::Feature,
         ];
     }

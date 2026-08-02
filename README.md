@@ -4,18 +4,26 @@ A production-ready, fully dynamic e-commerce platform. Laravel 12 API + Blade
 admin panel, Next.js 16 storefront, MySQL, Redis, and S3-compatible storage —
 all containerised.
 
-**Phases 1–2 complete:** foundation, plus authentication and role-based access
-control. Catalog, orders, and payments are later phases.
+**Phases 1–3 complete:** foundation; authentication and role-based access
+control; dynamic store settings, branding, and theme management. Catalog,
+orders, and payments are later phases.
 
 ## What "fully dynamic" means here
 
 None of the following is hardcoded anywhere in the frontend. All of it is
-served by the Laravel settings API and editable at runtime:
+served by the Laravel settings API and editable at runtime from the admin
+panel:
 
-company name · logo · favicon · brand colours · theme colours · contact
-information · social links · SEO metadata · feature flags · menus · footer
+company name · logo · light/dark logo · favicon · brand description · brand
+colours · button colour · border radius · font family · website title · meta
+tags · Google Analytics and Facebook Pixel IDs · phone · email · address ·
+Google Maps URL · social links · currency and symbol · tax and VAT · order and
+invoice prefixes · feature flags · menus · footer
 
 Adding a new brandable field is an `INSERT`, not a migration and a deploy.
+
+Environment variables hold secrets and infrastructure addresses only. Business
+branding is data — see [docs/settings.md](docs/settings.md).
 
 ## Stack
 
@@ -72,7 +80,7 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 │       ├── lib/            api client, env validation, theme, query client
 │       └── components/     ui/, layout/, providers/
 ├── docker/           nginx/ php/ mysql/ redis/
-└── docs/             architecture.md · api.md · setup.md
+└── docs/             architecture.md · api.md · settings.md · setup.md
 ```
 
 ## Endpoints
@@ -85,9 +93,12 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 | POST | `/api/v1/auth/*` | Customer register, login, logout, password, profile |
 | POST | `/api/v1/admin/auth/*` | Staff login, logout, password |
 | — | `/api/v1/admin/admins/*` | Staff management, roles, permissions |
+| — | `/api/v1/admin/settings/*` | Read, bulk-update, media upload, cache flush |
+| — | `/admin/settings` | *(Blade)* Settings management panel |
 | POST | `/api/revalidate` | *(Next.js)* Cache purge webhook |
 
-See [docs/api.md](docs/api.md) and [docs/authentication.md](docs/authentication.md).
+See [docs/api.md](docs/api.md), [docs/settings.md](docs/settings.md), and
+[docs/authentication.md](docs/authentication.md).
 
 ## Access control
 
@@ -105,13 +116,19 @@ Full reasoning in [docs/authentication.md](docs/authentication.md).
 ## Testing
 
 ```bash
-docker compose exec php php artisan test    # runs on in-memory SQLite
+docker compose exec php php artisan test    # 179 passing, in-memory SQLite
 
 cd frontend
 npm run typecheck
 npm run lint
 npm run build
 ```
+
+`backend/.env.testing` is committed and holds no secrets. Laravel loads it in
+place of `.env` whenever `APP_ENV=testing`, which keeps the suite hermetic:
+`docker-compose` injects `backend/.env` into the container as real environment
+variables, and without a testing env file the suite would run against the
+development Redis and MySQL.
 
 ## Design decisions
 
@@ -126,6 +143,13 @@ knowing up front:
   sessions or drop queued jobs.
 - **Public settings need two gates** — `is_public` *and* a publicly-exposable
   group — so a mistaken toggle on a payment credential cannot leak it.
+- **Setting keys contain dots, so validation rules escape them.** A rule keyed
+  `settings.theme.primary_color` is read by the validator as nested-array
+  traversal: it looks for a nested array, finds nothing, and passes every rule
+  silently. `settings.theme\.primary_color` is what actually validates.
+- **Brand uploads use a mime allowlist, not Laravel's `image` rule.** `image`
+  rejects SVG outright, and logos are commonly SVG. The allowlist is strictly
+  narrower — seven named formats against any raster type.
 - **CORS origins are explicit.** A wildcard is invalid alongside
   `supports_credentials: true`; browsers reject the combination.
 - **The frontend degrades rather than crashes.** If the API is unreachable it

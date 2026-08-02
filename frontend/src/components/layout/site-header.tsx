@@ -1,8 +1,8 @@
 'use client';
 
-import Image from 'next/image';
 import Link from 'next/link';
-import { useSettings } from '@/components/providers/settings-provider';
+import { useStoreConfig } from '@/components/providers/store-config-provider';
+import { BrandLogo } from '@/features/settings/components/brand-logo';
 import { useCustomerSession, useLogout } from '@/features/auth/hooks/use-customer-auth';
 
 /**
@@ -17,31 +17,17 @@ import { useCustomerSession, useLogout } from '@/features/auth/hooks/use-custome
  * replaced by a `useMenu('header')` call at that point.
  */
 export function SiteHeader() {
-  const { settings } = useSettings();
+  const { companyName } = useStoreConfig();
   const { user, isAuthenticated, isHydrated } = useCustomerSession();
   const logout = useLogout();
-
-  const companyName = settings.general?.company_name ?? 'Store';
-  const logo = settings.branding?.logo;
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
         <Link href="/" className="flex items-center gap-2.5" aria-label={`${companyName} home`}>
-          {logo ? (
-            <Image
-              src={logo}
-              alt={companyName}
-              width={140}
-              height={36}
-              priority
-              className="h-9 w-auto object-contain"
-            />
-          ) : (
-            // Until an administrator uploads a logo, render the company name
-            // as a wordmark rather than a broken image placeholder.
-            <span className="text-lg font-semibold tracking-tight">{companyName}</span>
-          )}
+          {/* Resolves the light/dark variant and falls back to the company
+              name as a wordmark when no logo has been uploaded. */}
+          <BrandLogo height={36} />
         </Link>
 
         <nav aria-label="Main navigation" className="hidden items-center gap-6 md:flex">

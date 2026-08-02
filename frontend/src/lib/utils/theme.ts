@@ -79,6 +79,24 @@ function rgbToHsl(r: number, g: number, b: number): Hsl {
   };
 }
 
+/**
+ * Re-serialise a hex colour from its parsed channel values.
+ *
+ * The return value is built from three integers, so it cannot carry anything
+ * through from the admin's input — which is what makes it safe to inject into
+ * the <style> block. Returns null for anything that does not parse.
+ */
+export function normaliseHex(hex: string | null | undefined): string | null {
+  if (!hex) return null;
+
+  const rgb = parseHex(hex);
+  if (!rgb) return null;
+
+  const channel = (value: number): string => value.toString(16).padStart(2, '0');
+
+  return `#${channel(rgb.r)}${channel(rgb.g)}${channel(rgb.b)}`;
+}
+
 /** "#2563eb" -> "221 83% 53%", or null when the input is not a valid hex colour. */
 export function hexToHslTriple(hex: string | null | undefined): string | null {
   if (!hex) return null;
@@ -121,36 +139,58 @@ export function readableForeground(hex: string | null | undefined): string {
 export function buildThemeCss(theme: ThemeSettings | undefined): string {
   const variables: Record<string, string> = {};
 
-  const colorMap: Array<[keyof ThemeSettings, string]> = [
-    ['primary_color', 'primary'],
-    ['secondary_color', 'secondary'],
-    ['accent_color', 'accent'],
-    ['background_color', 'background'],
-    ['foreground_color', 'foreground'],
-    ['destructive_color', 'destructive'],
+  // An unset button colour inherits the primary colour rather than going
+  // unstyled — mirrors the same rule in buildStoreConfig.
+  const buttonColor = theme?.button_color ?? theme?.primary_color;
+
+  const colorMap: Array<[string | null | undefined, string]> = [
+    [theme?.primary_color, 'primary'],
+    [theme?.secondary_color, 'secondary'],
+    [theme?.accent_color, 'accent'],
+    [theme?.background_color, 'background'],
+    [theme?.foreground_color, 'foreground'],
+    [buttonColor, 'button'],
+    [theme?.destructive_color, 'destructive'],
   ];
 
-  for (const [settingKey, cssName] of colorMap) {
-    const triple = hexToHslTriple(theme?.[settingKey] as string | null | undefined);
+  for (const [value, cssName] of colorMap) {
+    const triple = hexToHslTriple(value);
 
     if (triple) {
       variables[`--${cssName}`] = triple;
+
+      // Also emit the literal hex under the names the brief specifies, for
+      // plain CSS that does not go through Tailwind's hsl(var(--x)) wrapper.
+      // Safe to inject: the value is re-serialised from parsed integers below,
+      // never echoed verbatim.
+      const hex = normaliseHex(value);
+
+      if (hex) {
+        variables[`--${cssName}-color`] = hex;
+      }
     }
   }
 
   // Paired foreground colours, so text on a coloured surface stays legible
   // whatever the administrator picks.
-  for (const [settingKey, cssName] of [
-    ['primary_color', 'primary'],
-    ['secondary_color', 'secondary'],
-    ['accent_color', 'accent'],
-    ['destructive_color', 'destructive'],
-  ] as Array<[keyof ThemeSettings, string]>) {
-    const value = theme?.[settingKey] as string | null | undefined;
-
+  for (const [value, cssName] of [
+    [theme?.primary_color, 'primary'],
+    [theme?.secondary_color, 'secondary'],
+    [theme?.accent_color, 'accent'],
+    [buttonColor, 'button'],
+    [theme?.destructive_color, 'destructive'],
+  ] as Array<[string | null | undefined, string]>) {
     if (value) {
       variables[`--${cssName}-foreground`] = readableForeground(value);
     }
+  }
+
+  // `--text-color` is the name the brief specifies for body text; `--foreground`
+  // is what the Tailwind layer already consumes. Both point at the same value.
+  const textHex = normaliseHex(theme?.foreground_color);
+
+  if (textHex) {
+    variables['--text-color'] = textHex;
   }
 
   // `radius` and `font_family` are free-text admin inputs, unlike the colours

@@ -26,7 +26,16 @@ final class SettingResource extends JsonResource
     {
         return [
             'key' => $this->key,
+            // Image/file settings resolve to an absolute URL here, ready for
+            // an <img src> preview in the admin form.
             'value' => $this->typedValue(),
+            // The stored disk path, present only for file-backed settings. The
+            // admin UI uses it to distinguish "no asset uploaded" from "asset
+            // uploaded but the URL failed to build", which the resolved value
+            // alone cannot express — both are null.
+            $this->mergeWhen($this->type->isFileReference(), fn (): array => [
+                'path' => $this->value,
+            ]),
             'type' => $this->type->value,
             'type_label' => $this->type->label(),
             'group' => $this->group->value,

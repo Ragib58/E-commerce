@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\Admin\AdminAuthController;
 use App\Http\Controllers\Api\V1\Admin\AdminManagementController;
 use App\Http\Controllers\Api\V1\Admin\RoleController;
+use App\Http\Controllers\Api\V1\Admin\SettingsManagementController;
 use App\Http\Controllers\Api\V1\Auth\CustomerAuthController;
 use App\Http\Controllers\Api\V1\Auth\EmailVerificationController;
 use App\Http\Controllers\Api\V1\Auth\PasswordResetController;
@@ -215,6 +216,52 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
                 Route::put('/{admin}/permissions', [AdminManagementController::class, 'assignPermissions'])
                     ->middleware('permission:manage_roles')
                     ->name('permissions');
+            });
+
+            /*
+             * Dynamic store settings — branding, theme, SEO, business rules.
+             *
+             * Read paths accept `view_settings` as well, so a read-only staff
+             * role can inspect configuration without being able to restyle the
+             * storefront. Every write requires `manage_settings`.
+             *
+             * Unlike /settings/public, this surface exposes private groups
+             * (mail, payment), which is why it is permission-gated rather than
+             * merely authenticated.
+             */
+            Route::prefix('settings')->name('settings.')->group(function (): void {
+                Route::get('/', [SettingsManagementController::class, 'index'])
+                    ->middleware('permission:view_settings,manage_settings')
+                    ->name('index');
+
+                Route::get('/groups', [SettingsManagementController::class, 'groups'])
+                    ->middleware('permission:view_settings,manage_settings')
+                    ->name('groups');
+
+                Route::put('/', [SettingsManagementController::class, 'update'])
+                    ->middleware('permission:manage_settings')
+                    ->name('update');
+
+                Route::post('/cache/flush', [SettingsManagementController::class, 'flushCache'])
+                    ->middleware('permission:manage_settings')
+                    ->name('cache.flush');
+
+                /*
+                 * Brand asset upload and removal.
+                 *
+                 * The key is constrained to the dot-namespaced format so the
+                 * route cannot swallow a path segment and match something
+                 * unintended.
+                 */
+                Route::post('/media/{key}', [SettingsManagementController::class, 'uploadMedia'])
+                    ->where('key', '[a-z0-9_]+\.[a-z0-9_]+')
+                    ->middleware('permission:manage_settings')
+                    ->name('media.upload');
+
+                Route::delete('/media/{key}', [SettingsManagementController::class, 'destroyMedia'])
+                    ->where('key', '[a-z0-9_]+\.[a-z0-9_]+')
+                    ->middleware('permission:manage_settings')
+                    ->name('media.destroy');
             });
 
             Route::get('/roles', [RoleController::class, 'index'])

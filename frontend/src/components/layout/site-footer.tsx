@@ -1,33 +1,30 @@
 'use client';
 
-import { useSettings } from '@/components/providers/settings-provider';
+import { useStoreConfig } from '@/components/providers/store-config-provider';
+import type { SocialPlatform } from '@/features/settings/lib/store-config';
 
 /**
  * Site footer.
  *
- * Contact details and social links are rendered from settings and each block
- * is omitted entirely when unconfigured — an administrator who has not set an
- * Instagram URL gets no empty icon, not a dead link.
+ * Contact details and social links are rendered from the store configuration
+ * and each block is omitted entirely when unconfigured — an administrator who
+ * has not set an Instagram URL gets no empty icon, not a dead link.
  */
 
-const SOCIAL_LABELS: Record<string, string> = {
+const SOCIAL_LABELS: Record<SocialPlatform, string> = {
   facebook: 'Facebook',
   instagram: 'Instagram',
   x: 'X',
   linkedin: 'LinkedIn',
   youtube: 'YouTube',
+  tiktok: 'TikTok',
 };
 
 export function SiteFooter() {
-  const { settings } = useSettings();
+  const { companyName, brandDescription, contact, social } = useStoreConfig();
 
-  const companyName = settings.general?.company_name ?? 'Store';
-  const contact = settings.contact ?? {};
-  const social = settings.social ?? {};
-
-  const socialLinks = Object.entries(social).filter(
-    (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0,
-  );
+  const hasContact =
+    contact.email || contact.phone || contact.address || contact.supportHours || contact.googleMapsUrl;
 
   const year = new Date().getFullYear();
 
@@ -36,14 +33,12 @@ export function SiteFooter() {
       <div className="mx-auto grid max-w-6xl gap-8 px-4 py-12 sm:px-6 md:grid-cols-3">
         <div>
           <h2 className="text-sm font-semibold">{companyName}</h2>
-          {settings.general?.description ? (
-            <p className="mt-2 max-w-xs text-sm text-muted-foreground">
-              {settings.general.description}
-            </p>
+          {brandDescription ? (
+            <p className="mt-2 max-w-xs text-sm text-muted-foreground">{brandDescription}</p>
           ) : null}
         </div>
 
-        {(contact.email || contact.phone || contact.address || contact.support_hours) && (
+        {hasContact ? (
           <div>
             <h2 className="text-sm font-semibold">Contact</h2>
             <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
@@ -56,22 +51,37 @@ export function SiteFooter() {
               ) : null}
               {contact.phone ? (
                 <li>
-                  <a href={`tel:${contact.phone.replace(/\s/g, '')}`} className="hover:text-foreground">
+                  <a
+                    href={`tel:${contact.phone.replace(/\s/g, '')}`}
+                    className="hover:text-foreground"
+                  >
                     {contact.phone}
                   </a>
                 </li>
               ) : null}
               {contact.address ? <li>{contact.address}</li> : null}
-              {contact.support_hours ? <li>{contact.support_hours}</li> : null}
+              {contact.googleMapsUrl ? (
+                <li>
+                  <a
+                    href={contact.googleMapsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="hover:text-foreground"
+                  >
+                    View on map
+                  </a>
+                </li>
+              ) : null}
+              {contact.supportHours ? <li>{contact.supportHours}</li> : null}
             </ul>
           </div>
-        )}
+        ) : null}
 
-        {socialLinks.length > 0 && (
+        {social.length > 0 ? (
           <div>
             <h2 className="text-sm font-semibold">Follow</h2>
             <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
-              {socialLinks.map(([platform, url]) => (
+              {social.map(({ platform, url }) => (
                 <li key={platform}>
                   <a
                     href={url}
@@ -81,13 +91,13 @@ export function SiteFooter() {
                     rel="noopener noreferrer"
                     className="hover:text-foreground"
                   >
-                    {SOCIAL_LABELS[platform] ?? platform}
+                    {SOCIAL_LABELS[platform]}
                   </a>
                 </li>
               ))}
             </ul>
           </div>
-        )}
+        ) : null}
       </div>
 
       <div className="border-t border-border">

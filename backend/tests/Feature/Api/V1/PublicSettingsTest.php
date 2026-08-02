@@ -29,10 +29,14 @@ final class PublicSettingsTest extends TestCase
             ->assertJsonPath('success', true)
             ->assertJsonStructure([
                 'data' => [
-                    'general' => ['company_name', 'tagline', 'currency'],
-                    'branding' => ['logo', 'favicon'],
-                    'theme' => ['primary_color', 'secondary_color'],
-                    'contact' => ['email', 'phone'],
+                    'general' => ['company_name', 'tagline'],
+                    'branding' => ['logo', 'logo_light', 'logo_dark', 'favicon', 'brand_description'],
+                    'theme' => ['primary_color', 'secondary_color', 'accent_color', 'button_color', 'radius', 'font_family'],
+                    'contact' => ['email', 'phone', 'address', 'google_maps_url'],
+                    'social' => ['facebook', 'instagram', 'youtube', 'linkedin', 'tiktok'],
+                    'seo' => ['website_title', 'meta_description', 'meta_keywords'],
+                    'analytics' => ['google_analytics_id', 'facebook_pixel_id'],
+                    'business' => ['currency', 'currency_symbol', 'tax_rate', 'vat_rate', 'order_prefix', 'invoice_prefix'],
                 ],
                 'meta' => ['version', 'groups'],
             ]);
@@ -41,6 +45,7 @@ final class PublicSettingsTest extends TestCase
         // consume `data.branding.logo` rather than `data.branding['branding.logo']`.
         $response->assertJsonPath('data.general.company_name', 'Nexus Commerce');
         $response->assertJsonPath('data.theme.primary_color', '#2563eb');
+        $response->assertJsonPath('data.business.currency', 'USD');
     }
 
     #[Test]

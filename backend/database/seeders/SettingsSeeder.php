@@ -104,24 +104,7 @@ final class SettingsSeeder extends Seeder
                 'is_public' => true,
                 'sort_order' => 3,
             ],
-            [
-                'key' => 'general.currency',
-                'value' => 'USD',
-                'type' => SettingType::String,
-                'group' => SettingGroup::General,
-                'label' => 'Default Currency',
-                'is_public' => true,
-                'sort_order' => 4,
-            ],
-            [
-                'key' => 'general.currency_symbol',
-                'value' => '$',
-                'type' => SettingType::String,
-                'group' => SettingGroup::General,
-                'label' => 'Currency Symbol',
-                'is_public' => true,
-                'sort_order' => 5,
-            ],
+            // Currency lives in the `business` group, not here — see below.
             [
                 'key' => 'general.locale',
                 'value' => 'en',
@@ -129,7 +112,7 @@ final class SettingsSeeder extends Seeder
                 'group' => SettingGroup::General,
                 'label' => 'Default Locale',
                 'is_public' => true,
-                'sort_order' => 6,
+                'sort_order' => 4,
             ],
             [
                 'key' => 'general.maintenance_mode',
@@ -139,7 +122,7 @@ final class SettingsSeeder extends Seeder
                 'label' => 'Maintenance Mode',
                 'description' => 'When enabled the storefront shows a maintenance notice.',
                 'is_public' => true,
-                'sort_order' => 7,
+                'sort_order' => 5,
             ],
 
             // ---------------------------------------------------------------
@@ -157,13 +140,34 @@ final class SettingsSeeder extends Seeder
                 'sort_order' => 1,
             ],
             [
+                'key' => 'branding.logo_light',
+                'value' => null,
+                'type' => SettingType::Image,
+                'group' => SettingGroup::Branding,
+                'label' => 'Logo (Light Backgrounds)',
+                'description' => 'Used on light surfaces. Falls back to the primary logo when unset.',
+                'is_public' => true,
+                'sort_order' => 2,
+            ],
+            [
                 'key' => 'branding.logo_dark',
                 'value' => null,
                 'type' => SettingType::Image,
                 'group' => SettingGroup::Branding,
-                'label' => 'Logo (Dark Mode)',
+                'label' => 'Logo (Dark Backgrounds)',
+                'description' => 'Shown when the visitor prefers a dark colour scheme.',
                 'is_public' => true,
-                'sort_order' => 2,
+                'sort_order' => 3,
+            ],
+            [
+                'key' => 'branding.brand_description',
+                'value' => 'Curated products, delivered with care.',
+                'type' => SettingType::Text,
+                'group' => SettingGroup::Branding,
+                'label' => 'Brand Description',
+                'description' => 'Short positioning statement shown in the footer and share cards.',
+                'is_public' => true,
+                'sort_order' => 4,
             ],
             [
                 'key' => 'branding.favicon',
@@ -174,7 +178,7 @@ final class SettingsSeeder extends Seeder
                 'description' => 'Browser tab icon. 32x32 ICO or PNG.',
                 'is_public' => true,
                 'is_locked' => true,
-                'sort_order' => 3,
+                'sort_order' => 5,
             ],
             [
                 'key' => 'branding.og_image',
@@ -184,7 +188,7 @@ final class SettingsSeeder extends Seeder
                 'label' => 'Social Share Image',
                 'description' => 'Shown when a link to the site is shared. 1200x630 recommended.',
                 'is_public' => true,
-                'sort_order' => 4,
+                'sort_order' => 6,
             ],
 
             // ---------------------------------------------------------------
@@ -238,22 +242,33 @@ final class SettingsSeeder extends Seeder
                 'sort_order' => 5,
             ],
             [
+                'key' => 'theme.button_color',
+                'value' => '#2563eb',
+                'type' => SettingType::Color,
+                'group' => SettingGroup::Theme,
+                'label' => 'Button Colour',
+                'description' => 'Fill colour for primary buttons. Defaults to the primary colour when unset.',
+                'is_public' => true,
+                'sort_order' => 6,
+            ],
+            [
                 'key' => 'theme.destructive_color',
                 'value' => '#dc2626',
                 'type' => SettingType::Color,
                 'group' => SettingGroup::Theme,
                 'label' => 'Destructive Colour',
                 'is_public' => true,
-                'sort_order' => 6,
+                'sort_order' => 7,
             ],
             [
                 'key' => 'theme.radius',
                 'value' => '0.5rem',
                 'type' => SettingType::String,
                 'group' => SettingGroup::Theme,
-                'label' => 'Corner Radius',
+                'label' => 'Border Radius',
+                'description' => 'Corner rounding, e.g. 0.5rem or 8px.',
                 'is_public' => true,
-                'sort_order' => 7,
+                'sort_order' => 8,
             ],
             [
                 'key' => 'theme.font_family',
@@ -261,8 +276,9 @@ final class SettingsSeeder extends Seeder
                 'type' => SettingType::String,
                 'group' => SettingGroup::Theme,
                 'label' => 'Font Family',
+                'description' => 'Letters, digits, spaces and hyphens only.',
                 'is_public' => true,
-                'sort_order' => 8,
+                'sort_order' => 9,
             ],
 
             // ---------------------------------------------------------------
@@ -296,13 +312,23 @@ final class SettingsSeeder extends Seeder
                 'sort_order' => 3,
             ],
             [
+                'key' => 'contact.google_maps_url',
+                'value' => null,
+                'type' => SettingType::Url,
+                'group' => SettingGroup::Contact,
+                'label' => 'Google Maps URL',
+                'description' => 'Link or embed URL for the storefront location.',
+                'is_public' => true,
+                'sort_order' => 4,
+            ],
+            [
                 'key' => 'contact.support_hours',
                 'value' => 'Monday to Friday, 9:00 - 18:00',
                 'type' => SettingType::String,
                 'group' => SettingGroup::Contact,
                 'label' => 'Support Hours',
                 'is_public' => true,
-                'sort_order' => 4,
+                'sort_order' => 5,
             ],
 
             // ---------------------------------------------------------------
@@ -353,10 +379,30 @@ final class SettingsSeeder extends Seeder
                 'is_public' => true,
                 'sort_order' => 5,
             ],
+            [
+                'key' => 'social.tiktok',
+                'value' => null,
+                'type' => SettingType::Url,
+                'group' => SettingGroup::Social,
+                'label' => 'TikTok URL',
+                'is_public' => true,
+                'sort_order' => 6,
+            ],
 
             // ---------------------------------------------------------------
             // SEO
             // ---------------------------------------------------------------
+            [
+                'key' => 'seo.website_title',
+                'value' => 'Nexus Commerce',
+                'type' => SettingType::String,
+                'group' => SettingGroup::Seo,
+                'label' => 'Website Title',
+                'description' => 'Browser tab title and the suffix appended to every page title.',
+                'is_public' => true,
+                'is_locked' => true,
+                'sort_order' => 1,
+            ],
             [
                 'key' => 'seo.meta_title',
                 'value' => 'Nexus Commerce — Everything you need, delivered.',
@@ -364,7 +410,7 @@ final class SettingsSeeder extends Seeder
                 'group' => SettingGroup::Seo,
                 'label' => 'Default Meta Title',
                 'is_public' => true,
-                'sort_order' => 1,
+                'sort_order' => 2,
             ],
             [
                 'key' => 'seo.meta_description',
@@ -373,7 +419,7 @@ final class SettingsSeeder extends Seeder
                 'group' => SettingGroup::Seo,
                 'label' => 'Default Meta Description',
                 'is_public' => true,
-                'sort_order' => 2,
+                'sort_order' => 3,
             ],
             [
                 'key' => 'seo.meta_keywords',
@@ -381,8 +427,9 @@ final class SettingsSeeder extends Seeder
                 'type' => SettingType::String,
                 'group' => SettingGroup::Seo,
                 'label' => 'Meta Keywords',
+                'description' => 'Comma-separated.',
                 'is_public' => true,
-                'sort_order' => 3,
+                'sort_order' => 4,
             ],
             [
                 'key' => 'seo.indexable',
@@ -392,7 +439,99 @@ final class SettingsSeeder extends Seeder
                 'label' => 'Allow Search Engine Indexing',
                 'description' => 'Disable on staging environments to keep them out of search results.',
                 'is_public' => true,
+                'sort_order' => 5,
+            ],
+
+            // ---------------------------------------------------------------
+            // Analytics — third-party measurement tags
+            //
+            // Public by nature: a GA or Pixel identifier is visible in the page
+            // source of every site that uses one. They are stored here rather
+            // than in .env so marketing can change them without a deploy.
+            // ---------------------------------------------------------------
+            [
+                'key' => 'analytics.google_analytics_id',
+                'value' => null,
+                'type' => SettingType::String,
+                'group' => SettingGroup::Analytics,
+                'label' => 'Google Analytics ID',
+                'description' => 'Measurement ID, e.g. G-XXXXXXXXXX. Leave blank to disable.',
+                'is_public' => true,
+                'sort_order' => 1,
+            ],
+            [
+                'key' => 'analytics.facebook_pixel_id',
+                'value' => null,
+                'type' => SettingType::String,
+                'group' => SettingGroup::Analytics,
+                'label' => 'Facebook Pixel ID',
+                'description' => 'Numeric Pixel ID. Leave blank to disable.',
+                'is_public' => true,
+                'sort_order' => 2,
+            ],
+
+            // ---------------------------------------------------------------
+            // Business — currency, tax, and document numbering
+            // ---------------------------------------------------------------
+            [
+                'key' => 'business.currency',
+                'value' => 'USD',
+                'type' => SettingType::String,
+                'group' => SettingGroup::Business,
+                'label' => 'Currency Code',
+                'description' => 'ISO 4217 code, e.g. USD, EUR, BDT.',
+                'is_public' => true,
+                'is_locked' => true,
+                'sort_order' => 1,
+            ],
+            [
+                'key' => 'business.currency_symbol',
+                'value' => '$',
+                'type' => SettingType::String,
+                'group' => SettingGroup::Business,
+                'label' => 'Currency Symbol',
+                'is_public' => true,
+                'is_locked' => true,
+                'sort_order' => 2,
+            ],
+            [
+                'key' => 'business.tax_rate',
+                'value' => 0.0,
+                'type' => SettingType::Float,
+                'group' => SettingGroup::Business,
+                'label' => 'Tax Rate (%)',
+                'description' => 'Applied to order subtotals. Enter 8.25 for 8.25%.',
+                'is_public' => true,
+                'sort_order' => 3,
+            ],
+            [
+                'key' => 'business.vat_rate',
+                'value' => 0.0,
+                'type' => SettingType::Float,
+                'group' => SettingGroup::Business,
+                'label' => 'VAT Rate (%)',
+                'description' => 'Value-added tax, where it applies separately from sales tax.',
+                'is_public' => true,
                 'sort_order' => 4,
+            ],
+            [
+                'key' => 'business.order_prefix',
+                'value' => 'ORD-',
+                'type' => SettingType::String,
+                'group' => SettingGroup::Business,
+                'label' => 'Order Number Prefix',
+                'description' => 'Prepended to generated order numbers.',
+                'is_public' => true,
+                'sort_order' => 5,
+            ],
+            [
+                'key' => 'business.invoice_prefix',
+                'value' => 'INV-',
+                'type' => SettingType::String,
+                'group' => SettingGroup::Business,
+                'label' => 'Invoice Number Prefix',
+                'is_public' => true,
+                'sort_order' => 6,
             ],
 
             // ---------------------------------------------------------------

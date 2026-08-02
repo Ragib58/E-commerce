@@ -1,4 +1,5 @@
-import { fetchPublicSettings, withDefaults } from '@/features/settings/api';
+import { getStoreConfig } from '@/features/settings/lib/get-store-config';
+import { formatPrice } from '@/features/settings/lib/store-config';
 import { ConnectionStatus } from '@/features/health/components/connection-status';
 
 /**
@@ -16,20 +17,20 @@ import { ConnectionStatus } from '@/features/health/components/connection-status
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
-  const { settings, version, isFallback } = await fetchPublicSettings();
-  const resolved = withDefaults(settings);
-
-  const companyName = resolved.general?.company_name ?? 'Store';
-  const tagline = resolved.general?.tagline;
+  const { config, version, isFallback } = await getStoreConfig();
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
       <section className="max-w-2xl">
         <p className="text-sm font-medium text-primary">Foundation phase</p>
-        <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">{companyName}</h1>
-        {tagline ? <p className="mt-4 text-lg text-muted-foreground">{tagline}</p> : null}
-        {resolved.general?.description ? (
-          <p className="mt-3 text-muted-foreground">{resolved.general.description}</p>
+        <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">
+          {config.companyName}
+        </h1>
+        {config.tagline ? (
+          <p className="mt-4 text-lg text-muted-foreground">{config.tagline}</p>
+        ) : null}
+        {config.brandDescription ? (
+          <p className="mt-3 text-muted-foreground">{config.brandDescription}</p>
         ) : null}
       </section>
 
@@ -57,12 +58,22 @@ export default async function HomePage() {
           </p>
 
           <dl className="mt-4 space-y-2.5 text-sm">
-            <ConfigRow label="Company name" value={resolved.general?.company_name} />
-            <ConfigRow label="Currency" value={resolved.general?.currency} />
-            <ConfigRow label="Primary colour" value={resolved.theme?.primary_color} swatch />
-            <ConfigRow label="Accent colour" value={resolved.theme?.accent_color} swatch />
-            <ConfigRow label="Support email" value={resolved.contact?.email} />
-            <ConfigRow label="Logo" value={resolved.branding?.logo ?? 'not uploaded'} />
+            <ConfigRow label="Company name" value={config.companyName} />
+            <ConfigRow label="Website title" value={config.websiteTitle} />
+            <ConfigRow
+              label="Currency"
+              value={`${config.business.currency} · ${formatPrice(config, 1234.5)}`}
+            />
+            <ConfigRow label="Primary colour" value={config.colors.primary} swatch />
+            <ConfigRow label="Accent colour" value={config.colors.accent} swatch />
+            <ConfigRow label="Button colour" value={config.colors.button} swatch />
+            <ConfigRow label="Support email" value={config.contact.email} />
+            <ConfigRow label="Logo" value={config.logo ?? 'not uploaded'} />
+            <ConfigRow label="Favicon" value={config.favicon ?? 'not uploaded'} />
+            <ConfigRow
+              label="Analytics"
+              value={config.analytics.googleAnalyticsId ?? 'not configured'}
+            />
             <ConfigRow label="Settings version" value={version} />
           </dl>
         </div>

@@ -22,23 +22,40 @@ export const FALLBACK_SETTINGS: PublicSettings = {
   general: {
     company_name: 'Store',
     tagline: null,
-    currency: 'USD',
-    currency_symbol: '$',
     maintenance_mode: false,
   },
-  branding: { logo: null, favicon: null, og_image: null },
+  branding: {
+    logo: null,
+    logo_light: null,
+    logo_dark: null,
+    favicon: null,
+    og_image: null,
+    brand_description: null,
+  },
   theme: {
     primary_color: '#2563eb',
     secondary_color: '#64748b',
     accent_color: '#f59e0b',
     background_color: '#ffffff',
     foreground_color: '#0f172a',
+    button_color: null,
     destructive_color: '#dc2626',
     radius: '0.5rem',
   },
   contact: {},
   social: {},
   seo: { indexable: false },
+  // No tracking tags by default: injecting a measurement script the operator
+  // did not configure would be a privacy problem, not a missing feature.
+  analytics: { google_analytics_id: null, facebook_pixel_id: null },
+  business: {
+    currency: 'USD',
+    currency_symbol: '$',
+    tax_rate: 0,
+    vat_rate: 0,
+    order_prefix: 'ORD-',
+    invoice_prefix: 'INV-',
+  },
   feature: {},
 };
 
@@ -101,6 +118,8 @@ export function withDefaults(settings: PublicSettings): PublicSettings {
     contact: { ...FALLBACK_SETTINGS.contact, ...settings.contact },
     social: { ...FALLBACK_SETTINGS.social, ...settings.social },
     seo: { ...FALLBACK_SETTINGS.seo, ...settings.seo },
+    analytics: { ...FALLBACK_SETTINGS.analytics, ...settings.analytics },
+    business: { ...FALLBACK_SETTINGS.business, ...settings.business },
     feature: { ...FALLBACK_SETTINGS.feature, ...settings.feature },
   };
 }
