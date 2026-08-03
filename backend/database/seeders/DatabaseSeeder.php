@@ -24,6 +24,15 @@ final class DatabaseSeeder extends Seeder
             // assigned one.
             RolesAndPermissionsSeeder::class,
             SuperAdminSeeder::class,
+
+            // Variant vocabulary (Size, Colour). Ordinary editable rows, not
+            // fixtures the code depends on — they exist so a fresh install can
+            // build a variable product without defining the vocabulary first.
+            AttributeSeeder::class,
+
+            // Sample products. Skips itself in production, where the catalog
+            // belongs to the operator.
+            CatalogDemoSeeder::class,
         ]);
     }
 }

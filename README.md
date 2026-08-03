@@ -4,9 +4,39 @@ A production-ready, fully dynamic e-commerce platform. Laravel 12 API + Blade
 admin panel, Next.js 16 storefront, MySQL, Redis, and S3-compatible storage —
 all containerised.
 
-**Phases 1–3 complete:** foundation; authentication and role-based access
-control; dynamic store settings, branding, and theme management. Catalog,
-orders, and payments are later phases.
+**Phases 1–4 complete:** foundation; authentication and role-based access
+control; dynamic store settings, branding, and theme management; product
+catalog and inventory. Orders and payments are later phases.
+
+## Catalog and inventory
+
+Categories nest to unlimited depth, brands are flat, and products come in four
+types — simple, variable, digital, and customizable — with the type deciding
+what else about a product is meaningful (whether variants are required, whether
+stock is tracked, whether shipping fields apply).
+
+Variants are built from **dynamic attributes**: "Size" and "Colour" are rows in
+the database, not columns and not an enum, so adding "Material: cotton | linen"
+from the admin panel is an `INSERT` rather than a migration. Each attribute
+carries its own storefront control (swatch, button, dropdown), which is what
+lets a new attribute render correctly with no frontend change.
+
+Two guarantees hold across the inventory layer:
+
+- **Every stock change is journalled.** `InventoryService` is the only code
+  permitted to write a stock level, and it writes the level and its ledger row
+  in one transaction. The ledger is append-only — enforced by the model, not
+  merely documented — so a correction is a new opposing movement, never an edit.
+- **Concurrent sales cannot oversell.** Each mutation re-reads its row under
+  `lockForUpdate()` inside the transaction, so the textbook lost-update race
+  (two requests both read 1, both write 0, two customers promised the last unit)
+  cannot occur.
+
+Money is stored and transported as an integer count of minor units end to end;
+the conversion to a displayable string happens once, at the view boundary.
+
+The public API never exposes `cost_price` or exact stock — margin and sales
+velocity are not public data. Both appear only when an admin guard resolves.
 
 ## What "fully dynamic" means here
 

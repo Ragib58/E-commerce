@@ -280,6 +280,143 @@ the service (a direct SQL fix, a restored backup).
 
 ---
 
+## Public catalog
+
+Unauthenticated and read-only. Every query is constrained to **published**
+records server-side, so no parameter can surface a draft — a draft slug returns
+404, deliberately indistinguishable from one that never existed, so the
+unreleased catalog cannot be enumerated.
+
+Records are addressed by **slug**; products additionally carry a public `uuid`
+as their `id`. The integer primary key is never exposed.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/products` | Filtered, sorted, paginated listing |
+| GET | `/products/{slug}` | Includes variants, media, related, breadcrumbs |
+| GET | `/categories` | The published tree, nested |
+| GET | `/categories/{slug}` | The category plus its products |
+| GET | `/brands` | |
+| GET | `/brands/{slug}` | The brand plus its products |
+| GET | `/catalog/filters` | Attributes, brands, price bounds, sort keys |
+| GET | `/catalog/rails/{rail}` | `featured`, `new_arrivals`, or `best_sellers` |
+
+### Listing parameters
+
+| Parameter | Example | Notes |
+|---|---|---|
+| `search` | `?search=cotton` | Name, SKU, slug, short description |
+| `category` | `?category=clothing` | **Includes descendants** |
+| `brand` | `?brand[]=northwind,contoso` | Comma-separated |
+| `min_price`, `max_price` | `?min_price=1000` | Minor units, against list price |
+| `attributes[slug]` | `?attributes[colour]=red,blue` | Values OR; attributes AND |
+| `in_stock` | `?in_stock=1` | |
+| `sort` | `?sort=price_asc` | Allowlisted; unknown falls back to default |
+| `per_page` | `?per_page=24` | Capped server-side |
+
+Sorts are an allowlist mapped to indexed columns, so an unrecognised value
+cannot reach the `ORDER BY`. Every sort carries an `id` tiebreaker, without
+which rows sharing a sort value could appear twice — or never — while paging.
+
+### What the public API never returns
+
+`cost_price` and exact `stock` are omitted unless an admin guard resolves.
+Publishing cost price gives away the margin on every product; publishing exact
+stock lets a competitor meter sales precisely. The storefront receives
+`in_stock` and `low_stock` booleans instead.
+
+---
+
+## Admin catalog
+
+Every route requires a valid admin token, an active account, a current
+password, and the listed permission. Records are addressed by **id** or, for
+products and variants, **uuid** — never by slug, since an admin editing a slug
+would invalidate the URL they are editing from.
+
+Product permissions are split four ways because the roles differ: a
+merchandiser edits copy and pricing all day, while deleting a product withdraws
+something with order history behind it.
+
+| Method | Path | Permission |
+|---|---|---|
+| GET | `/admin/products` | `view_products` |
+| POST | `/admin/products` | `create_products` |
+| GET | `/admin/products/{id}` | `view_products` |
+| PATCH | `/admin/products/{id}` | `update_products` |
+| DELETE | `/admin/products/{id}` | `delete_products` |
+| POST | `/admin/products/{id}/restore` | `delete_products` |
+| PATCH | `/admin/products/{id}/status` | `update_products` |
+| POST | `/admin/products/bulk` | `update_products` (+`delete_products` to delete) |
+| POST | `/admin/products/{id}/media` | `update_products` |
+| PUT | `/admin/products/{id}/media/reorder` | `update_products` |
+| PATCH | `/admin/products/{id}/media/{media}/thumbnail` | `update_products` |
+| DELETE | `/admin/products/{id}/media/{media}` | `update_products` |
+| GET/POST | `/admin/products/{id}/variants` | `view_products` / `update_products` |
+| POST | `/admin/products/{id}/variants/generate` | `update_products` |
+| PATCH/DELETE | `/admin/variants/{uuid}` | `update_products` |
+| GET/POST | `/admin/categories` | `view_categories` … / `manage_categories` |
+| PATCH/DELETE | `/admin/categories/{id}` | `manage_categories` |
+| PUT | `/admin/categories/reorder` | `manage_categories` |
+| GET/POST | `/admin/brands` | `view_brands` … / `manage_brands` |
+| PATCH/DELETE | `/admin/brands/{id}` | `manage_brands` |
+| GET/POST | `/admin/attributes` | `view_products` / `create_products` |
+| POST/DELETE | `/admin/attributes/{id}/values` | `update_products` |
+
+Deleting a non-empty category or brand is refused unless `?cascade=1` is
+passed, so re-homing children and uncategorising products is always explicit.
+Products are only ever soft-deleted — the stock ledger holds foreign keys to
+them, and the catalog record is evidence of what was sold.
+
+`POST /admin/products/{id}/variants/generate` takes attribute value ids grouped
+by attribute and builds the cartesian product, skipping combinations that
+already exist — so it is safe to re-run after adding a colour.
+
+---
+
+## Inventory
+
+Stock is gated on `update_products` rather than a catalog-authoring permission,
+so a warehouse account can record counts without being able to create or delete
+products.
+
+| Method | Path | Permission |
+|---|---|---|
+| POST | `/admin/products/{id}/stock` | `update_products` |
+| GET | `/admin/products/{id}/stock/history` | `view_products` |
+| GET | `/admin/inventory/movements` | `view_products` |
+| GET | `/admin/inventory/alerts` | `view_products` |
+| GET | `/admin/inventory/summary` | `view_products` |
+
+### `POST /admin/products/{id}/stock`
+
+```json
+{
+  "mode": "delta",
+  "quantity": 25,
+  "reason": "restock",
+  "variant_id": null,
+  "note": "Supplier invoice 4471"
+}
+```
+
+`mode` is the field that matters. `delta` applies a signed change; `absolute`
+asserts a counted figure and derives the delta server-side, inside the lock.
+Conflating them is how stock takes go wrong — an operator who counts 40 and
+submits it as a delta *adds* 40 to a figure they had just proved wrong.
+
+`reason` is restricted to manually selectable values. `sale` and `return` are
+written only by the order pipeline; accepting them here would let a manual
+entry masquerade as a sale and corrupt reconciliation against actual orders.
+
+A variable product holds no stock of its own, so an adjustment against one
+without `variant_id` is refused rather than guessed at.
+
+Every response carries the resulting `stock` and the full movement row, so a
+panel can render the change it just made without refetching the ledger.
+
+---
+
 ## Frontend webhook
 
 ### `POST /api/revalidate`

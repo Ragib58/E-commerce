@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Events\CatalogChanged;
 use App\Events\SettingsUpdated;
+use App\Events\StockAdjusted;
+use App\Listeners\InvalidateCatalogCache;
 use App\Listeners\InvalidateFrontendCache;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Event;
@@ -67,5 +70,13 @@ final class AppServiceProvider extends ServiceProvider
     private function registerEventListeners(): void
     {
         Event::listen(SettingsUpdated::class, InvalidateFrontendCache::class);
+
+        /*
+         * Catalog and stock changes purge the storefront's cached product
+         * pages. Bound to explicit methods because one listener handles both
+         * events with different rules about when a purge is warranted.
+         */
+        Event::listen(CatalogChanged::class, [InvalidateCatalogCache::class, 'handleCatalogChanged']);
+        Event::listen(StockAdjusted::class, [InvalidateCatalogCache::class, 'handleStockAdjusted']);
     }
 }

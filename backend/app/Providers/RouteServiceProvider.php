@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Models\Brand;
+use App\Models\Category;
+use App\Models\Product;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Str;
 
 /**
  * Defines the named rate limiters referenced by route middleware.
@@ -21,6 +26,60 @@ final class RouteServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureRateLimiters();
+        $this->configureModelBindings();
+    }
+
+    /**
+     * Bind catalog models by primary key on admin routes.
+     *
+     * The models resolve by slug for the storefront, which is what makes
+     * `/products/blue-shirt` work. The admin panel must not inherit that: an
+     * admin editing a product's slug would invalidate the very URL they are
+     * editing it from, and a draft has no stable slug at all.
+     *
+     * These bindings are scoped to the `admin.` route-name prefix so the public
+     * slug binding is untouched.
+     */
+    private function configureModelBindings(): void
+    {
+        $bindings = [
+            'product' => Product::class,
+            'category' => Category::class,
+            'brand' => Brand::class,
+        ];
+
+        foreach ($bindings as $parameter => $model) {
+            Route::bind($parameter, function (string $value) use ($model): object {
+                /*
+                 * Matched on the request path rather than the route name: the
+                 * name is only available once the route is resolved, and the
+                 * path is what actually distinguishes the two surfaces.
+                 */
+                $isAdminRequest = request()->is('api/*/admin/*') || request()->is('admin/*');
+
+                if ($isAdminRequest) {
+                    /*
+                     * Admin URLs identify a record by something stable. A slug
+                     * is not: an admin editing a product's slug would
+                     * invalidate the very URL they are editing it from, and a
+                     * draft may not have a meaningful one yet.
+                     *
+                     * Products expose a uuid publicly and keep their integer
+                     * key private; categories and brands have no uuid, so the
+                     * panel addresses them by integer id.
+                     */
+                    if (ctype_digit($value)) {
+                        return $model::query()->whereKey((int) $value)->firstOrFail();
+                    }
+
+                    if (Str::isUuid($value)) {
+                        return $model::query()->where('uuid', $value)->firstOrFail();
+                    }
+                }
+
+                return $model::query()->where('slug', $value)->firstOrFail();
+            });
+        }
     }
 
     private function configureRateLimiters(): void

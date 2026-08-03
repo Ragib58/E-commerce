@@ -6,8 +6,14 @@ namespace App\Providers;
 
 use App\Enums\PermissionType;
 use App\Models\Admin;
+use App\Models\Brand;
+use App\Models\Category;
+use App\Models\Product;
 use App\Models\Role;
 use App\Policies\AdminPolicy;
+use App\Policies\BrandPolicy;
+use App\Policies\CategoryPolicy;
+use App\Policies\ProductPolicy;
 use App\Policies\RolePolicy;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
@@ -23,6 +29,9 @@ final class AuthServiceProvider extends ServiceProvider
     private array $policies = [
         Admin::class => AdminPolicy::class,
         Role::class => RolePolicy::class,
+        Product::class => ProductPolicy::class,
+        Category::class => CategoryPolicy::class,
+        Brand::class => BrandPolicy::class,
     ];
 
     public function boot(): void

@@ -56,14 +56,18 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Catalog',
     items: [
-      { label: 'Products', href: '/admin/products', permissions: ['view_products'], comingSoon: true },
+      { label: 'Products', href: '/admin/products', permissions: ['view_products'] },
       {
         label: 'Categories',
         href: '/admin/categories',
-        permissions: ['view_categories'],
-        comingSoon: true,
+        permissions: ['view_categories', 'manage_categories', 'view_products'],
       },
-      { label: 'Brands', href: '/admin/brands', permissions: ['view_brands'], comingSoon: true },
+      {
+        label: 'Brands',
+        href: '/admin/brands',
+        permissions: ['view_brands', 'manage_brands', 'view_products'],
+      },
+      { label: 'Inventory', href: '/admin/inventory', permissions: ['view_products'] },
     ],
   },
   {

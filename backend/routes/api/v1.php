@@ -4,11 +4,18 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\Admin\AdminAuthController;
 use App\Http\Controllers\Api\V1\Admin\AdminManagementController;
+use App\Http\Controllers\Api\V1\Admin\AttributeController;
+use App\Http\Controllers\Api\V1\Admin\BrandController;
+use App\Http\Controllers\Api\V1\Admin\CategoryController;
+use App\Http\Controllers\Api\V1\Admin\InventoryController;
+use App\Http\Controllers\Api\V1\Admin\ProductController;
 use App\Http\Controllers\Api\V1\Admin\RoleController;
 use App\Http\Controllers\Api\V1\Admin\SettingsManagementController;
+use App\Http\Controllers\Api\V1\Admin\VariantController;
 use App\Http\Controllers\Api\V1\Auth\CustomerAuthController;
 use App\Http\Controllers\Api\V1\Auth\EmailVerificationController;
 use App\Http\Controllers\Api\V1\Auth\PasswordResetController;
+use App\Http\Controllers\Api\V1\CatalogController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\SettingsController;
 use Illuminate\Support\Facades\Route;
@@ -57,6 +64,50 @@ Route::prefix('health')
 Route::middleware('throttle:public')->group(function (): void {
     Route::get('/settings/public', [SettingsController::class, 'index'])
         ->name('settings.public');
+});
+
+/*
+|--------------------------------------------------------------------------
+| Public Catalog
+|--------------------------------------------------------------------------
+|
+| Unauthenticated, read-only. Every query is constrained to published records
+| inside CatalogService, so no parameter here can surface a draft product.
+|
+| Slugs rather than ids throughout: they are the storefront's URLs, and integer
+| ids would leak catalog size and invite enumeration.
+|
+*/
+
+Route::middleware('throttle:public')->group(function (): void {
+
+    /*
+     * Static segments are declared before the wildcard route.
+     *
+     * Laravel matches in declaration order, so `/products/{slug}` registered
+     * first would swallow every path below it — a product slugged "filters"
+     * is not needed for that to break; the route simply never gets a chance.
+     */
+    Route::get('/catalog/filters', [CatalogController::class, 'filters'])->name('catalog.filters');
+
+    Route::get('/catalog/rails/{rail}', [CatalogController::class, 'rail'])
+        ->where('rail', 'featured|new_arrivals|best_sellers')
+        ->name('catalog.rail');
+
+    Route::get('/products', [CatalogController::class, 'products'])->name('products.index');
+    Route::get('/products/{slug}', [CatalogController::class, 'product'])
+        ->where('slug', '[a-z0-9-]+')
+        ->name('products.show');
+
+    Route::get('/categories', [CatalogController::class, 'categories'])->name('categories.index');
+    Route::get('/categories/{slug}', [CatalogController::class, 'category'])
+        ->where('slug', '[a-z0-9-]+')
+        ->name('categories.show');
+
+    Route::get('/brands', [CatalogController::class, 'brands'])->name('brands.index');
+    Route::get('/brands/{slug}', [CatalogController::class, 'brand'])
+        ->where('slug', '[a-z0-9-]+')
+        ->name('brands.show');
 });
 
 /*
@@ -262,6 +313,223 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
                     ->where('key', '[a-z0-9_]+\.[a-z0-9_]+')
                     ->middleware('permission:manage_settings')
                     ->name('media.destroy');
+            });
+
+            /*
+             * Catalog administration.
+             *
+             * Permissions are split four ways for products (view / create /
+             * update / delete) because the roles genuinely differ: a
+             * merchandiser edits copy and pricing all day, while deleting a
+             * product withdraws something with order history behind it.
+             *
+             * Categories and brands use a single `manage_*` write permission —
+             * restructuring a taxonomy is one skill, not three.
+             */
+
+            Route::prefix('categories')->name('categories.')->group(function (): void {
+                // Declared before /{category} so the literal segment is not
+                // captured as a slug.
+                Route::put('/reorder', [CategoryController::class, 'reorder'])
+                    ->middleware('permission:manage_categories')
+                    ->name('reorder');
+
+                Route::get('/', [CategoryController::class, 'index'])
+                    ->middleware('permission:view_categories,manage_categories,view_products')
+                    ->name('index');
+
+                Route::post('/', [CategoryController::class, 'store'])
+                    ->middleware('permission:manage_categories')
+                    ->name('store');
+
+                Route::get('/{category}', [CategoryController::class, 'show'])
+                    ->middleware('permission:view_categories,manage_categories,view_products')
+                    ->name('show');
+
+                Route::patch('/{category}', [CategoryController::class, 'update'])
+                    ->middleware('permission:manage_categories')
+                    ->name('update');
+
+                Route::delete('/{category}', [CategoryController::class, 'destroy'])
+                    ->middleware('permission:manage_categories')
+                    ->name('destroy');
+
+                Route::patch('/{category}/status', [CategoryController::class, 'setStatus'])
+                    ->middleware('permission:manage_categories')
+                    ->name('status');
+            });
+
+            Route::prefix('brands')->name('brands.')->group(function (): void {
+                Route::get('/', [BrandController::class, 'index'])
+                    ->middleware('permission:view_brands,manage_brands,view_products')
+                    ->name('index');
+
+                Route::post('/', [BrandController::class, 'store'])
+                    ->middleware('permission:manage_brands')
+                    ->name('store');
+
+                Route::get('/{brand}', [BrandController::class, 'show'])
+                    ->middleware('permission:view_brands,manage_brands,view_products')
+                    ->name('show');
+
+                Route::patch('/{brand}', [BrandController::class, 'update'])
+                    ->middleware('permission:manage_brands')
+                    ->name('update');
+
+                Route::delete('/{brand}', [BrandController::class, 'destroy'])
+                    ->middleware('permission:manage_brands')
+                    ->name('destroy');
+
+                Route::patch('/{brand}/status', [BrandController::class, 'setStatus'])
+                    ->middleware('permission:manage_brands')
+                    ->name('status');
+            });
+
+            Route::prefix('products')->name('products.')->group(function (): void {
+                Route::post('/bulk', [ProductController::class, 'bulk'])
+                    ->middleware('permission:update_products')
+                    ->name('bulk');
+
+                Route::get('/', [ProductController::class, 'index'])
+                    ->middleware('permission:view_products')
+                    ->name('index');
+
+                Route::post('/', [ProductController::class, 'store'])
+                    ->middleware('permission:create_products')
+                    ->name('store');
+
+                /*
+                 * Restore takes `trashedProduct`, not `product`, so the
+                 * registered model binding does not intercept it — that
+                 * binding resolves live rows only, and would 404 on the very
+                 * records this route exists to recover.
+                 */
+                Route::post('/{trashedProduct}/restore', [ProductController::class, 'restore'])
+                    ->middleware('permission:delete_products')
+                    ->name('restore');
+
+                Route::get('/{product}', [ProductController::class, 'show'])
+                    ->middleware('permission:view_products')
+                    ->name('show');
+
+                Route::patch('/{product}', [ProductController::class, 'update'])
+                    ->middleware('permission:update_products')
+                    ->name('update');
+
+                Route::delete('/{product}', [ProductController::class, 'destroy'])
+                    ->middleware('permission:delete_products')
+                    ->name('destroy');
+
+                Route::patch('/{product}/status', [ProductController::class, 'setStatus'])
+                    ->middleware('permission:update_products')
+                    ->name('status');
+
+                /*
+                 * Gallery management.
+                 */
+                Route::post('/{product}/media', [ProductController::class, 'uploadMedia'])
+                    ->middleware('permission:update_products')
+                    ->name('media.upload');
+
+                Route::put('/{product}/media/reorder', [ProductController::class, 'reorderMedia'])
+                    ->middleware('permission:update_products')
+                    ->name('media.reorder');
+
+                Route::patch('/{product}/media/{media}/thumbnail', [ProductController::class, 'setThumbnail'])
+                    ->middleware('permission:update_products')
+                    ->name('media.thumbnail');
+
+                Route::delete('/{product}/media/{media}', [ProductController::class, 'destroyMedia'])
+                    ->middleware('permission:update_products')
+                    ->name('media.destroy');
+
+                /*
+                 * Variants, nested under their product.
+                 */
+                Route::get('/{product}/variants', [VariantController::class, 'index'])
+                    ->middleware('permission:view_products')
+                    ->name('variants.index');
+
+                Route::post('/{product}/variants', [VariantController::class, 'store'])
+                    ->middleware('permission:update_products')
+                    ->name('variants.store');
+
+                Route::post('/{product}/variants/generate', [VariantController::class, 'generate'])
+                    ->middleware('permission:update_products')
+                    ->name('variants.generate');
+
+                /*
+                 * Stock. Gated on `update_products` rather than a catalog
+                 * authoring permission, so a warehouse account can record
+                 * counts without being able to create or delete products.
+                 */
+                Route::post('/{product}/stock', [InventoryController::class, 'adjust'])
+                    ->middleware('permission:update_products')
+                    ->name('stock.adjust');
+
+                Route::get('/{product}/stock/history', [InventoryController::class, 'history'])
+                    ->middleware('permission:view_products')
+                    ->name('stock.history');
+            });
+
+            /*
+             * Variant mutation by uuid, outside the product prefix: the admin
+             * UI edits a variant from a row it already holds, without needing
+             * to thread the parent product through the URL.
+             */
+            Route::patch('/variants/{variant}', [VariantController::class, 'update'])
+                ->middleware('permission:update_products')
+                ->name('variants.update');
+
+            Route::delete('/variants/{variant}', [VariantController::class, 'destroy'])
+                ->middleware('permission:update_products')
+                ->name('variants.destroy');
+
+            /*
+             * Inventory reporting across the whole catalog.
+             */
+            Route::prefix('inventory')->name('inventory.')->group(function (): void {
+                Route::get('/movements', [InventoryController::class, 'movements'])
+                    ->middleware('permission:view_products')
+                    ->name('movements');
+
+                Route::get('/alerts', [InventoryController::class, 'alerts'])
+                    ->middleware('permission:view_products')
+                    ->name('alerts');
+
+                Route::get('/summary', [InventoryController::class, 'summary'])
+                    ->middleware('permission:view_products')
+                    ->name('summary');
+            });
+
+            /*
+             * Variant attributes — the rows that make Size and Colour data
+             * rather than schema.
+             */
+            Route::prefix('attributes')->name('attributes.')->group(function (): void {
+                Route::get('/', [AttributeController::class, 'index'])
+                    ->middleware('permission:view_products')
+                    ->name('index');
+
+                Route::post('/', [AttributeController::class, 'store'])
+                    ->middleware('permission:create_products')
+                    ->name('store');
+
+                Route::patch('/{attribute}', [AttributeController::class, 'update'])
+                    ->middleware('permission:update_products')
+                    ->name('update');
+
+                Route::delete('/{attribute}', [AttributeController::class, 'destroy'])
+                    ->middleware('permission:delete_products')
+                    ->name('destroy');
+
+                Route::post('/{attribute}/values', [AttributeController::class, 'storeValue'])
+                    ->middleware('permission:update_products')
+                    ->name('values.store');
+
+                Route::delete('/{attribute}/values/{value}', [AttributeController::class, 'destroyValue'])
+                    ->middleware('permission:update_products')
+                    ->name('values.destroy');
             });
 
             Route::get('/roles', [RoleController::class, 'index'])
