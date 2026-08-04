@@ -127,6 +127,63 @@ final class CatalogService
     }
 
     /**
+     * Published products by their public identifiers, in the order asked for.
+     *
+     * Serves the compare tray and the recently-viewed rail, both of which hold
+     * a list of ids on the client and need the products behind them. One query
+     * for the whole list rather than one per id: a compare tray of four would
+     * otherwise be four round trips, and recently-viewed up to twenty.
+     *
+     * Order is restored from the requested list because `whereIn` returns rows
+     * in whatever order the index yields — which would scramble a
+     * recently-viewed rail whose entire meaning is its ordering.
+     *
+     * Deliberately uncached: these lists are per-visitor, so a shared cache
+     * entry would be a cache of one, and the key space is unbounded.
+     *
+     * @param  array<int, string>  $identifiers  uuids or slugs
+     * @return \Illuminate\Database\Eloquent\Collection<int, Product>
+     */
+    public function productsByIdentifiers(array $identifiers, int $limit = 24): \Illuminate\Database\Eloquent\Collection
+    {
+        $identifiers = array_slice(array_values(array_unique(array_filter($identifiers))), 0, $limit);
+
+        if ($identifiers === []) {
+            return new \Illuminate\Database\Eloquent\Collection();
+        }
+
+        $products = Product::query()
+            ->published()
+            ->withListingRelations()
+            ->where(fn (Builder $query) => $query
+                ->whereIn('uuid', $identifiers)
+                ->orWhereIn('slug', $identifiers))
+            ->get();
+
+        // Keyed by both identifiers, since a caller may mix them.
+        $byIdentifier = [];
+
+        foreach ($products as $product) {
+            $byIdentifier[$product->uuid] = $product;
+            $byIdentifier[$product->slug] = $product;
+        }
+
+        $ordered = [];
+
+        foreach ($identifiers as $identifier) {
+            $product = $byIdentifier[$identifier] ?? null;
+
+            // An id that no longer resolves — unpublished since it was viewed —
+            // simply drops out rather than leaving a hole the client must handle.
+            if ($product !== null && ! isset($ordered[$product->getKey()])) {
+                $ordered[$product->getKey()] = $product;
+            }
+        }
+
+        return new \Illuminate\Database\Eloquent\Collection(array_values($ordered));
+    }
+
+    /**
      * The published category tree, for storefront navigation.
      *
      * @return \Illuminate\Support\Collection<int, Category>

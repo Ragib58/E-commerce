@@ -1,5 +1,6 @@
 import { resolveApiBaseUrl } from '@/lib/env';
 import { getToken, realmForPath } from './auth-token';
+import { CART_TOKEN_HEADER, getCartToken, setCartToken } from './cart-token';
 import { ApiError, NetworkError } from './errors';
 import type { ApiResponse, ApiResult, RequestOptions } from './types';
 
@@ -66,6 +67,23 @@ async function request<TData>(
     }
   }
 
+  /*
+   * Attach the guest cart credential.
+   *
+   * Sent explicitly rather than carried in a cookie the browser attaches
+   * automatically — see cart-token.ts. Only when the caller has not set it
+   * itself, so a server component passing a token read from the request's
+   * cookies is not overwritten by the browser-only resolver (which returns
+   * null on the server anyway).
+   */
+  if (!requestHeaders.has(CART_TOKEN_HEADER)) {
+    const cartToken = getCartToken();
+
+    if (cartToken !== null) {
+      requestHeaders.set(CART_TOKEN_HEADER, cartToken);
+    }
+  }
+
   let response: Response;
 
   try {
@@ -89,6 +107,23 @@ async function request<TData>(
   }
 
   const requestId = response.headers.get('X-Request-Id') ?? undefined;
+
+  /*
+   * Capture a newly minted guest cart token.
+   *
+   * The API returns one the first time an anonymous visitor touches the cart.
+   * Persisting it here — rather than in each cart hook — means every path that
+   * can create a cart stores its credential, so a shopper never ends up with a
+   * server-side cart they cannot reach again.
+   *
+   * Requires `X-Cart-Token` in the API's CORS `exposed_headers`; without that
+   * the browser hides it and every request would mint a fresh empty cart.
+   */
+  const cartToken = response.headers.get(CART_TOKEN_HEADER);
+
+  if (cartToken !== null) {
+    setCartToken(cartToken);
+  }
 
   // 204 carries no body; parsing it would throw on the empty string.
   if (response.status === 204) {

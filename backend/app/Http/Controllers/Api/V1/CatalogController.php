@@ -223,6 +223,32 @@ final class CatalogController extends Controller
     }
 
     /**
+     * POST /catalog/products/lookup
+     *
+     * Resolve a list of product identifiers to full products, in order.
+     *
+     * Serves the compare tray and the recently-viewed rail, both of which hold
+     * their list on the client. POST rather than GET despite being a read: the
+     * list can hold twenty-plus uuids, which overflows practical URL length
+     * limits and would be truncated by some proxies — and a truncated list
+     * silently drops products rather than failing.
+     */
+    public function lookup(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'products' => ['required', 'array', 'max:24'],
+            'products.*' => ['string', 'max:255'],
+        ]);
+
+        return $this->successResponse(
+            data: ProductResource::collection(
+                $this->catalog->productsByIdentifiers($validated['products']),
+            ),
+            message: 'Products retrieved successfully.',
+        );
+    }
+
+    /**
      * GET /catalog/rails/{rail}
      *
      * A merchandising rail: featured, new_arrivals, or best_sellers.

@@ -2,6 +2,9 @@
 
 import { useMemo, useState } from 'react';
 import type { StoreConfig } from '@/features/settings/lib/store-config';
+import { AddToCartButton } from '@/features/cart/components/add-to-cart-button';
+import { CompareToggle, WishlistToggle } from '@/features/shopping/components/product-actions';
+import { useRecordProductView } from '@/features/shopping/hooks/use-compare';
 import { resolveDisplayPrice } from '../lib/format';
 import type { Product } from '../types';
 import { ProductGallery } from './product-gallery';
@@ -65,6 +68,16 @@ export function ProductDetail({ product, config }: ProductDetailProps) {
 
   const awaitingSelection = isVariable && selectedVariant === null;
   const canPurchase = !awaitingSelection && inventory.in_stock;
+
+  const [quantity, setQuantity] = useState(1);
+
+  /*
+   * Record the visit for the recently-viewed rail.
+   *
+   * Here rather than in the page shell because the shell is a server component
+   * and this is per-device browsing history that never leaves the browser.
+   */
+  useRecordProductView(product.id);
 
   function handleSelect(attributeSlug: string, valueSlug: string) {
     setSelection((current) => ({ ...current, [attributeSlug]: valueSlug }));
@@ -141,15 +154,62 @@ export function ProductDetail({ product, config }: ProductDetailProps) {
             )}
           </p>
 
-          <button
-            type="button"
-            disabled={!canPurchase}
-            className="w-full rounded-md bg-primary px-6 py-3 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-          >
-            {/* The cart itself belongs to a later phase; the control is here so
-                the selection flow is complete and testable. */}
-            Add to cart
-          </button>
+          <div className="flex flex-wrap items-end gap-3">
+            {/*
+              The quantity stepper is bounded by nothing here on purpose: the
+              server checks availability against the resulting total and
+              refuses what it cannot fulfil, with a message naming the real
+              figure. Clamping locally would need the exact stock count, which
+              the public API deliberately does not publish.
+            */}
+            <div>
+              <label htmlFor="quantity" className="mb-1 block text-sm font-medium">
+                Quantity
+              </label>
+              <input
+                id="quantity"
+                type="number"
+                min={1}
+                max={99}
+                value={quantity}
+                onChange={(event) =>
+                  setQuantity(Math.max(1, Math.min(99, Number(event.target.value) || 1)))
+                }
+                className="w-20 rounded-md border border-border bg-background px-3 py-2.5 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              />
+            </div>
+
+            <AddToCartButton
+              product={product.slug}
+              // The chosen variant's public id. A variable product without one
+              // is refused by the API, which is why the button is disabled
+              // until the selection resolves.
+              variant={selectedVariant?.id ?? null}
+              quantity={quantity}
+              disabled={!canPurchase}
+              disabledReason={
+                awaitingSelection
+                  ? 'Choose an option to continue.'
+                  : !inventory.in_stock
+                    ? 'This item is out of stock.'
+                    : undefined
+              }
+              className="flex-1 sm:flex-none"
+            />
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <WishlistToggle
+              identifier={product.id}
+              productName={product.name}
+              appearance="button"
+            />
+            <CompareToggle
+              identifier={product.id}
+              productName={product.name}
+              appearance="button"
+            />
+          </div>
         </div>
 
         {product.description ? (

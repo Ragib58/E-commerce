@@ -4,12 +4,14 @@ import type { ReactNode } from 'react';
 import './globals.css';
 
 import { getStoreConfig } from '@/features/settings/lib/get-store-config';
+import { fetchPages } from '@/features/content/api';
 import { AnalyticsScripts } from '@/features/settings/components/analytics-scripts';
 import { buildThemeCss } from '@/lib/utils/theme';
 import { QueryProvider } from '@/components/providers/query-provider';
 import { StoreConfigProvider } from '@/components/providers/store-config-provider';
 import { SiteHeader } from '@/components/layout/site-header';
 import { SiteFooter } from '@/components/layout/site-footer';
+import { CartDrawer } from '@/features/cart/components/cart-drawer';
 
 /**
  * Root layout.
@@ -79,7 +81,14 @@ export async function generateViewport(): Promise<Viewport> {
 }
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
-  const { config, version, isFallback } = await getStoreConfig();
+  // Concurrent: the settings payload and the CMS page list are independent, and
+  // awaiting them in sequence would add a round trip to every cold render.
+  // `fetchPages` degrades to an empty list rather than throwing, so an
+  // unreachable content API costs the footer links and nothing else.
+  const [{ config, version, isFallback }, pages] = await Promise.all([
+    getStoreConfig(),
+    fetchPages(),
+  ]);
 
   // Admin colours are converted to HSL triples and written as CSS custom
   // properties. Tailwind utilities read them via hsl(var(--primary)), so the
@@ -115,7 +124,17 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <div className="flex min-h-screen flex-col">
               <SiteHeader />
               <main className="flex-1">{children}</main>
-              <SiteFooter />
+              <SiteFooter
+                pages={pages.map((page) => ({ title: page.title, slug: page.slug }))}
+              />
+
+              {/*
+                Mounted once here rather than per page, so opening the drawer
+                never remounts its contents and the quantity controls keep
+                their pending state across a navigation. It renders null while
+                closed, so it costs nothing on pages nobody opens it from.
+              */}
+              <CartDrawer />
             </div>
           </StoreConfigProvider>
         </QueryProvider>

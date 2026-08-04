@@ -103,6 +103,36 @@ final class RouteServiceProvider extends ServiceProvider
                 ], 429));
         });
 
+        /*
+         * Cart mutations.
+         *
+         * Its own budget rather than sharing `public`, for two reasons. These
+         * are writes available to unauthenticated visitors, so they are the
+         * cheapest endpoint from which to create rows — a stricter ceiling
+         * bounds how fast anyone can fill the carts table. And a shopper
+         * legitimately clicking "+" repeatedly must not exhaust the budget that
+         * the rest of the storefront's browsing depends on.
+         *
+         * Keyed on the authenticated user when there is one, falling back to
+         * the cart token, then the IP. The token key matters: several guests
+         * behind one NAT would otherwise share a single allowance.
+         */
+        RateLimiter::for('cart', function (Request $request): Limit {
+            $user = $request->user();
+
+            $key = $user !== null
+                ? $user::class . ':' . $user->getAuthIdentifier()
+                : ($request->header(\App\Http\Middleware\ResolveCart::HEADER) ?: (string) $request->ip());
+
+            return Limit::perMinute((int) config('api.rate_limits.cart', 60))
+                ->by($key)
+                ->response(fn (): \Illuminate\Http\JsonResponse => response()->json([
+                    'success' => false,
+                    'message' => 'Too many cart updates. Please slow down.',
+                    'code' => 'RATE_LIMITED',
+                ], 429));
+        });
+
         // Health probes get their own budget so a traffic spike never blinds
         // monitoring, and monitoring never eats into the public budget.
         RateLimiter::for('health', function (Request $request): Limit {

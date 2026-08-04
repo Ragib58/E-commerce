@@ -6,13 +6,19 @@ namespace App\Providers;
 
 use App\Enums\PermissionType;
 use App\Models\Admin;
+use App\Models\Banner;
 use App\Models\Brand;
 use App\Models\Category;
+use App\Models\CmsPage;
+use App\Models\HomepageSection;
 use App\Models\Product;
 use App\Models\Role;
 use App\Policies\AdminPolicy;
+use App\Policies\BannerPolicy;
 use App\Policies\BrandPolicy;
 use App\Policies\CategoryPolicy;
+use App\Policies\CmsPagePolicy;
+use App\Policies\HomepageSectionPolicy;
 use App\Policies\ProductPolicy;
 use App\Policies\RolePolicy;
 use Illuminate\Support\Facades\Gate;
@@ -32,6 +38,9 @@ final class AuthServiceProvider extends ServiceProvider
         Product::class => ProductPolicy::class,
         Category::class => CategoryPolicy::class,
         Brand::class => BrandPolicy::class,
+        CmsPage::class => CmsPagePolicy::class,
+        Banner::class => BannerPolicy::class,
+        HomepageSection::class => HomepageSectionPolicy::class,
     ];
 
     public function boot(): void

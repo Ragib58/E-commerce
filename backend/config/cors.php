@@ -59,6 +59,11 @@ return [
         'X-API-Version',
         'X-Request-Id',
         'Origin',
+
+        // The guest cart credential. Sent explicitly by the client rather than
+        // carried automatically in a cookie, so a cross-site request cannot
+        // silently act on a visitor's cart — see ResolveCart middleware.
+        'X-Cart-Token',
     ],
 
     // Headers the browser is permitted to read from the response.
@@ -69,6 +74,12 @@ return [
         'X-RateLimit-Limit',
         'X-RateLimit-Remaining',
         'Retry-After',
+
+        // Must be exposed, not merely allowed: the API mints a guest cart
+        // token on first use and returns it here, and without this entry the
+        // browser hides the header from JavaScript — so every guest request
+        // would create a fresh, empty cart.
+        'X-Cart-Token',
     ],
 
     // Cache preflight results for 24h to cut OPTIONS round-trips.

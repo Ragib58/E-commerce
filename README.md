@@ -4,9 +4,75 @@ A production-ready, fully dynamic e-commerce platform. Laravel 12 API + Blade
 admin panel, Next.js 16 storefront, MySQL, Redis, and S3-compatible storage —
 all containerised.
 
-**Phases 1–4 complete:** foundation; authentication and role-based access
+**Phases 1–6 complete:** foundation; authentication and role-based access
 control; dynamic store settings, branding, and theme management; product
-catalog and inventory. Orders and payments are later phases.
+catalog and inventory; the dynamic homepage builder and CMS; the customer
+storefront and cart. Checkout, orders, and payments are later phases.
+
+## Storefront and cart
+
+Browsing, search, faceted filtering, the cart, wishlist, comparison, and the
+account area. The load-bearing decision is a negative one:
+
+**No price ever reaches the database from a request, and no price is ever read
+back from a cart row.** A client says *what* it wants and *how many*; unit
+price, discount, line total, subtotal, tax, and availability are all derived
+from the catalog on every read.
+
+That is stricter than validating a submitted price. Validation is a code path
+that can be skipped or forgotten on the next endpoint someone adds; deriving the
+figure means there is no client-supplied price in the system to check. So
+`cart_items` has no price column, and `AddCartItemRequest` has no price field to
+submit one into.
+
+Guests and signed-in customers share one `carts` table, keyed by either a token
+or a user id — one storage engine, one pricing path, and a merge on sign-in that
+is an `UPDATE` rather than a translation between two representations. The guest
+credential travels in an `X-Cart-Token` header rather than a cookie the API
+sets, because the API is deliberately stateless and an automatically-attached
+cookie would reintroduce the CSRF surface that absence exists to avoid.
+
+A cart does **not** reserve stock. Two shoppers can both hold the last unit; the
+one who checks out first gets it. Reserving at add-to-cart would let anyone deny
+the catalog to everyone else by filling a basket.
+
+Filters, sort, and pagination live in the URL, so a filtered view is shareable,
+survives a refresh, responds to the back button, and is rendered on the server.
+Product grids and cards stay server components; only the controls — filter rail,
+sort, add-to-cart, wishlist and compare toggles, cart drawer — ship JavaScript.
+
+See [docs/storefront.md](docs/storefront.md).
+
+## Dynamic homepage and CMS
+
+The homepage is not a template. It is an ordered list of rows in
+`homepage_sections` — hero sliders, promotional banners, featured products, new
+arrivals, best sellers, categories, flash sales, hand-picked collections,
+testimonials, blog rails, and free-form content blocks. Each carries an enabled
+flag, a sort order, and a start and end date. The Next.js page fetches that list
+and renders whatever it is given, in the order it is given.
+
+**No homepage business content is hardcoded in the frontend.** Adding a section
+is an `INSERT`; reordering the page is an `UPDATE`; scheduling a Black Friday
+hero is a date field. An admin drags sections into order, toggles them, and
+previews the result *at any chosen moment* — scheduling that can only be
+verified by waiting for the scheduled date is scheduling nobody trusts.
+
+Section content is resolved at read time, never snapshotted: a featured rail
+stores `{"limit": 8}`, not eight product ids captured at save time. Unpublishing
+a product removes it from the homepage without anyone re-saving a section.
+
+Editorial pages — About, Contact, Privacy, Terms, Refunds, Shipping — are rows
+in `cms_pages` served at `/p/{slug}`, each with its own title, slug, body,
+featured image, SEO metadata, and publish state. The six are seeded as drafts
+with visibly unwritten bodies and protected from deletion, but are otherwise
+fully editable: a store must be able to write its own refund policy.
+
+Rich text is reduced to a strict allowlist **on write**, so the stored value is
+the safe value and no read path can bypass the filter. That an author is an
+administrator is not an input filter.
+
+See [docs/content.md](docs/content.md).
 
 ## Catalog and inventory
 
@@ -110,7 +176,7 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 │       ├── lib/            api client, env validation, theme, query client
 │       └── components/     ui/, layout/, providers/
 ├── docker/           nginx/ php/ mysql/ redis/
-└── docs/             architecture.md · api.md · settings.md · setup.md
+└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · setup.md
 ```
 
 ## Endpoints
@@ -146,7 +212,7 @@ Full reasoning in [docs/authentication.md](docs/authentication.md).
 ## Testing
 
 ```bash
-docker compose exec php php artisan test    # 179 passing, in-memory SQLite
+docker compose exec php php artisan test    # in-memory SQLite
 
 cd frontend
 npm run typecheck

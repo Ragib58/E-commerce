@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
+import { useSessionMerge } from '@/features/shopping/hooks/use-session-merge';
 import { useLogin } from '../hooks/use-customer-auth';
 import { useCustomerSession } from '../hooks/use-customer-auth';
 import { loginSchema, type LoginInput } from '../schemas';
@@ -14,6 +15,7 @@ export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const login = useLogin();
+  const mergeGuestSession = useSessionMerge();
   const { isAuthenticated, isHydrated } = useCustomerSession();
 
   // Only same-origin relative paths are honoured. Accepting an absolute URL
@@ -42,6 +44,17 @@ export function LoginForm() {
   const onSubmit = handleSubmit(async (values) => {
     try {
       await login.mutateAsync(values);
+
+      /*
+       * Claim the guest cart and wishlist before navigating.
+       *
+       * Awaited so the destination page renders with the merged cart already
+       * in the query cache — navigating first would show an empty basket for a
+       * beat, which reads as the sign-in having discarded it. The merge is
+       * best-effort and never throws, so it cannot block a successful login.
+       */
+      await mergeGuestSession();
+
       router.replace(next);
     } catch (error) {
       // Field-level messages land on their inputs; anything else falls

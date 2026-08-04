@@ -10,6 +10,7 @@ use App\Http\Middleware\EnsureEmailIsVerified;
 use App\Http\Middleware\EnsurePasswordIsCurrent;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\RequestId;
+use App\Http\Middleware\ResolveCart;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -54,6 +55,16 @@ return Application::configure(basePath: dirname(__DIR__))
             // Overrides Laravel's built-in `verified`, which returns a bare
             // 403 that does not carry this project's error envelope.
             'verified' => EnsureEmailIsVerified::class,
+
+            /*
+             * Resolves the shopping cart for a request — by user id when
+             * signed in, by the X-Cart-Token header when not.
+             *
+             * Applied per-route rather than to the whole api group: it hits the
+             * database, and the catalog, settings, and health endpoints have no
+             * use for a cart.
+             */
+            'cart' => ResolveCart::class,
         ]);
 
         // Admin panel routes are session-based; keep CSRF on, exclude nothing.

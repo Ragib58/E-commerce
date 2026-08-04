@@ -83,6 +83,79 @@ export const queryKeys = {
     filters: () => ['catalog', 'filters'] as const,
   },
 
+  /*
+   * Storefront content — the homepage builder, banners, CMS pages.
+   *
+   * Nested under one root so saving a section can invalidate the homepage and
+   * its preview together, without touching the banner list that has not
+   * changed.
+   */
+  content: {
+    all: ['content'] as const,
+
+    homepage: {
+      all: ['content', 'homepage'] as const,
+      sections: () => ['content', 'homepage', 'sections'] as const,
+      preview: (at?: string) =>
+        at
+          ? (['content', 'homepage', 'preview', at] as const)
+          : (['content', 'homepage', 'preview'] as const),
+    },
+
+    banners: {
+      all: ['content', 'banners'] as const,
+      list: (filters?: Record<string, unknown>) =>
+        filters
+          ? (['content', 'banners', 'list', filters] as const)
+          : (['content', 'banners', 'list'] as const),
+    },
+
+    pages: {
+      all: ['content', 'pages'] as const,
+      list: (filters?: Record<string, unknown>) =>
+        filters
+          ? (['content', 'pages', 'list', filters] as const)
+          : (['content', 'pages', 'list'] as const),
+      detail: (slug: string) => ['content', 'pages', 'detail', slug] as const,
+    },
+  },
+
+  /*
+   * The shopping cart.
+   *
+   * A single key: there is exactly one cart per visitor, and every mutation
+   * returns the whole recomputed cart which is written straight into this
+   * entry. No per-line keys, because a line is never fetched on its own.
+   */
+  cart: {
+    all: ['cart'] as const,
+    detail: () => ['cart', 'detail'] as const,
+  },
+
+  /*
+   * Wishlist, compare, and recently viewed.
+   *
+   * The guest variants are keyed on the identifier list itself rather than a
+   * constant. That is deliberate: those lists live in localStorage, so there is
+   * no server event to invalidate on — keying on the contents means removing an
+   * item refetches instead of serving a cached page that still contains it.
+   */
+  wishlist: {
+    all: ['wishlist'] as const,
+    list: () => ['wishlist', 'list'] as const,
+    guest: (identifiers: string[]) => ['wishlist', 'guest', identifiers] as const,
+  },
+
+  compare: {
+    all: ['compare'] as const,
+    products: (identifiers: string[]) => ['compare', 'products', identifiers] as const,
+  },
+
+  recentlyViewed: {
+    all: ['recently-viewed'] as const,
+    products: (identifiers: string[]) => ['recently-viewed', 'products', identifiers] as const,
+  },
+
   inventory: {
     all: ['inventory'] as const,
     alerts: () => ['inventory', 'alerts'] as const,

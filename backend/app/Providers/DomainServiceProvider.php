@@ -4,15 +4,21 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Services\BannerService;
 use App\Services\BrandService;
+use App\Services\CartService;
 use App\Services\CatalogService;
 use App\Services\CategoryService;
+use App\Services\CmsPageService;
 use App\Services\HealthCheckService;
+use App\Services\HomepageService;
+use App\Services\HtmlSanitiser;
 use App\Services\InventoryService;
 use App\Services\MediaService;
 use App\Services\ProductService;
 use App\Services\SettingsService;
 use App\Services\VariantService;
+use App\Services\WishlistService;
 use Illuminate\Contracts\Support\DeferrableProvider;
 use Illuminate\Support\ServiceProvider;
 
@@ -47,6 +53,27 @@ final class DomainServiceProvider extends ServiceProvider implements DeferrableP
         $this->app->singleton(ProductService::class);
         $this->app->singleton(VariantService::class);
         $this->app->singleton(CatalogService::class);
+
+        /*
+         * Storefront content — the homepage builder, banners, CMS pages.
+         *
+         * HtmlSanitiser is a singleton despite holding no state: it reads its
+         * allowlist from config on every call, and resolving it fresh for each
+         * of a page's sections would repeat that lookup for nothing.
+         */
+        $this->app->singleton(HtmlSanitiser::class);
+        $this->app->singleton(BannerService::class);
+        $this->app->singleton(CmsPageService::class);
+        $this->app->singleton(HomepageService::class);
+
+        /*
+         * Storefront shopping.
+         *
+         * CartService is the sole authority on cart pricing — it recomputes
+         * every figure from the catalog and accepts none from a request.
+         */
+        $this->app->singleton(CartService::class);
+        $this->app->singleton(WishlistService::class);
     }
 
     /**
@@ -64,6 +91,12 @@ final class DomainServiceProvider extends ServiceProvider implements DeferrableP
             ProductService::class,
             VariantService::class,
             CatalogService::class,
+            HtmlSanitiser::class,
+            BannerService::class,
+            CmsPageService::class,
+            HomepageService::class,
+            CartService::class,
+            WishlistService::class,
         ];
     }
 }

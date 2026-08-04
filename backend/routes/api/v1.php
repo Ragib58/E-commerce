@@ -15,9 +15,15 @@ use App\Http\Controllers\Api\V1\Admin\VariantController;
 use App\Http\Controllers\Api\V1\Auth\CustomerAuthController;
 use App\Http\Controllers\Api\V1\Auth\EmailVerificationController;
 use App\Http\Controllers\Api\V1\Auth\PasswordResetController;
+use App\Http\Controllers\Api\V1\Admin\BannerController;
+use App\Http\Controllers\Api\V1\Admin\CmsPageController;
+use App\Http\Controllers\Api\V1\Admin\HomepageController;
+use App\Http\Controllers\Api\V1\CartController;
 use App\Http\Controllers\Api\V1\CatalogController;
+use App\Http\Controllers\Api\V1\ContentController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\SettingsController;
+use App\Http\Controllers\Api\V1\WishlistController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -94,6 +100,16 @@ Route::middleware('throttle:public')->group(function (): void {
         ->where('rail', 'featured|new_arrivals|best_sellers')
         ->name('catalog.rail');
 
+    /*
+     * Bulk product lookup, for the compare tray and recently-viewed rail.
+     *
+     * POST despite being a read: the list can hold twenty-plus uuids, which
+     * overflows practical URL length limits — and a truncated query string
+     * would silently drop products rather than failing visibly.
+     */
+    Route::post('/catalog/products/lookup', [CatalogController::class, 'lookup'])
+        ->name('catalog.lookup');
+
     Route::get('/products', [CatalogController::class, 'products'])->name('products.index');
     Route::get('/products/{slug}', [CatalogController::class, 'product'])
         ->where('slug', '[a-z0-9-]+')
@@ -109,6 +125,111 @@ Route::middleware('throttle:public')->group(function (): void {
         ->where('slug', '[a-z0-9-]+')
         ->name('brands.show');
 });
+
+/*
+|--------------------------------------------------------------------------
+| Public Storefront Content
+|--------------------------------------------------------------------------
+|
+| The dynamic homepage, promotional banners, and CMS pages.
+|
+| Every query here is constrained to *live* records inside the services —
+| publishable status AND an open scheduling window — so no parameter can
+| surface a draft page or a campaign that has not launched yet.
+|
+| /homepage returns the entire page in one response, sections already resolved
+| to their products, categories, or banners. One request rather than one per
+| section: a six-rail homepage would otherwise open with a six-deep waterfall
+| on every cold visit.
+|
+*/
+
+Route::middleware('throttle:public')->group(function (): void {
+    Route::get('/homepage', [ContentController::class, 'homepage'])->name('homepage');
+
+    Route::get('/banners', [ContentController::class, 'banners'])->name('banners.index');
+
+    Route::get('/pages', [ContentController::class, 'pages'])->name('pages.index');
+    Route::get('/pages/{slug}', [ContentController::class, 'page'])
+        ->where('slug', '[a-z0-9-]+')
+        ->name('pages.show');
+});
+
+/*
+|--------------------------------------------------------------------------
+| Shopping Cart
+|--------------------------------------------------------------------------
+|
+| Open to guests and signed-in customers alike. There is no `auth` middleware:
+| the cart *is* the authorization boundary, and a request can only ever act on
+| the cart its bearer token or X-Cart-Token header resolves to.
+|
+| `auth:sanctum` is deliberately absent even on the authenticated path. Adding
+| it would make these routes 401 for guests, and the whole point is that the
+| same endpoints serve both — the `cart` middleware resolves by user id when a
+| token is present and by header when it is not.
+|
+| No endpoint here accepts a price. Every figure in every response is
+| recomputed from the catalog by CartService — see its class docblock.
+|
+*/
+
+Route::prefix('cart')
+    ->name('cart.')
+    ->middleware(['cart', 'throttle:cart'])
+    ->group(function (): void {
+        Route::get('/', [CartController::class, 'show'])->name('show');
+        Route::delete('/', [CartController::class, 'clear'])->name('clear');
+
+        Route::post('/items', [CartController::class, 'store'])->name('items.store');
+        Route::patch('/items/{item}', [CartController::class, 'update'])
+            ->whereNumber('item')
+            ->name('items.update');
+        Route::delete('/items/{item}', [CartController::class, 'destroy'])
+            ->whereNumber('item')
+            ->name('items.destroy');
+
+        // Stored, not validated — see CartService::applyCoupon.
+        Route::post('/coupon', [CartController::class, 'applyCoupon'])->name('coupon');
+
+        /*
+         * Claims a guest cart after sign-in. Requires an authenticated caller,
+         * enforced in the controller rather than by middleware so the failure
+         * carries this API's error envelope.
+         */
+        Route::post('/merge', [CartController::class, 'merge'])->name('merge');
+    });
+
+/*
+|--------------------------------------------------------------------------
+| Wishlist
+|--------------------------------------------------------------------------
+|
+| Authenticated only, unlike the cart. A guest's saved items live in
+| localStorage and are merged here on sign-in — a server-side anonymous
+| wishlist costs what a cart does while being worth far less, since the shopper
+| cannot return to it from another device.
+|
+*/
+
+Route::prefix('wishlist')
+    ->name('wishlist.')
+    /*
+     * `auth:sanctum` alone, matching the customer routes below.
+     *
+     * Sanctum's `abilities` middleware alias is not registered in
+     * bootstrap/app.php, so naming it here would fail at runtime rather than
+     * tightening anything. The guard is still the separation that matters: it
+     * resolves the `users` provider, so an admin token — issued against the
+     * `admins` table — cannot authenticate here at all.
+     */
+    ->middleware(['auth:sanctum', 'throttle:authenticated'])
+    ->group(function (): void {
+        Route::get('/', [WishlistController::class, 'index'])->name('index');
+        Route::post('/', [WishlistController::class, 'store'])->name('store');
+        Route::post('/merge', [WishlistController::class, 'merge'])->name('merge');
+        Route::delete('/{product}', [WishlistController::class, 'destroy'])->name('destroy');
+    });
 
 /*
 |--------------------------------------------------------------------------
@@ -530,6 +651,130 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
                 Route::delete('/{attribute}/values/{value}', [AttributeController::class, 'destroyValue'])
                     ->middleware('permission:update_products')
                     ->name('values.destroy');
+            });
+
+            /*
+             * Storefront content — the homepage builder, banners, CMS pages.
+             *
+             * Split across two permissions that correspond to two real jobs:
+             * `manage_content` restructures the page and writes the policies,
+             * while `manage_banners` schedules campaign imagery into sections
+             * that already exist. A marketing account gets the latter without
+             * the ability to rewrite the terms and conditions.
+             *
+             * Read paths also admit `view_settings`, so a read-only staff role
+             * can inspect how the storefront is configured.
+             */
+
+            Route::prefix('homepage')->name('homepage.')->group(function (): void {
+                // Declared before /sections/{section} so the literal segment is
+                // not captured as an id.
+                Route::put('/sections/reorder', [HomepageController::class, 'reorder'])
+                    ->middleware('permission:manage_content')
+                    ->name('sections.reorder');
+
+                /*
+                 * Renders the page as the storefront would receive it, at an
+                 * arbitrary moment via `?at=`. That parameter is what makes
+                 * scheduling reviewable before the scheduled date arrives.
+                 */
+                Route::get('/preview', [HomepageController::class, 'preview'])
+                    ->middleware('permission:manage_content,manage_banners,view_settings')
+                    ->name('preview');
+
+                Route::get('/sections', [HomepageController::class, 'index'])
+                    ->middleware('permission:manage_content,manage_banners,view_settings')
+                    ->name('sections.index');
+
+                Route::post('/sections', [HomepageController::class, 'store'])
+                    ->middleware('permission:manage_content')
+                    ->name('sections.store');
+
+                Route::get('/sections/{section}', [HomepageController::class, 'show'])
+                    ->middleware('permission:manage_content,manage_banners,view_settings')
+                    ->name('sections.show');
+
+                Route::patch('/sections/{section}', [HomepageController::class, 'update'])
+                    ->middleware('permission:manage_content')
+                    ->name('sections.update');
+
+                Route::delete('/sections/{section}', [HomepageController::class, 'destroy'])
+                    ->middleware('permission:manage_content')
+                    ->name('sections.destroy');
+
+                Route::patch('/sections/{section}/status', [HomepageController::class, 'setEnabled'])
+                    ->middleware('permission:manage_content')
+                    ->name('sections.status');
+            });
+
+            Route::prefix('banners')->name('banners.')->group(function (): void {
+                Route::put('/reorder', [BannerController::class, 'reorder'])
+                    ->middleware('permission:manage_banners,manage_content')
+                    ->name('reorder');
+
+                Route::get('/', [BannerController::class, 'index'])
+                    ->middleware('permission:manage_banners,manage_content,view_settings')
+                    ->name('index');
+
+                Route::post('/', [BannerController::class, 'store'])
+                    ->middleware('permission:manage_banners,manage_content')
+                    ->name('store');
+
+                Route::get('/{banner}', [BannerController::class, 'show'])
+                    ->middleware('permission:manage_banners,manage_content,view_settings')
+                    ->name('show');
+
+                /*
+                 * POST rather than PATCH for the update.
+                 *
+                 * Banner edits carry file uploads, and PHP does not parse a
+                 * multipart body on PATCH — the fields would silently arrive
+                 * empty. The client sends POST with `_method=PATCH`, which
+                 * Laravel's method override turns back into a PATCH route.
+                 */
+                Route::match(['patch', 'post'], '/{banner}', [BannerController::class, 'update'])
+                    ->middleware('permission:manage_banners,manage_content')
+                    ->name('update');
+
+                Route::delete('/{banner}', [BannerController::class, 'destroy'])
+                    ->middleware('permission:manage_banners,manage_content')
+                    ->name('destroy');
+            });
+
+            Route::prefix('pages')->name('pages.')->group(function (): void {
+                Route::get('/', [CmsPageController::class, 'index'])
+                    ->middleware('permission:manage_content,view_settings')
+                    ->name('index');
+
+                Route::post('/', [CmsPageController::class, 'store'])
+                    ->middleware('permission:manage_content')
+                    ->name('store');
+
+                /*
+                 * Bound by slug, matching the storefront URL, so the segment is
+                 * constrained to slug characters — an id would 404 here by
+                 * design rather than by accident.
+                 */
+                Route::get('/{page}', [CmsPageController::class, 'show'])
+                    ->where('page', '[a-z0-9-]+')
+                    ->middleware('permission:manage_content,view_settings')
+                    ->name('show');
+
+                // Multipart uploads again — see the banner update above.
+                Route::match(['patch', 'post'], '/{page}', [CmsPageController::class, 'update'])
+                    ->where('page', '[a-z0-9-]+')
+                    ->middleware('permission:manage_content')
+                    ->name('update');
+
+                Route::delete('/{page}', [CmsPageController::class, 'destroy'])
+                    ->where('page', '[a-z0-9-]+')
+                    ->middleware('permission:manage_content')
+                    ->name('destroy');
+
+                Route::patch('/{page}/status', [CmsPageController::class, 'setStatus'])
+                    ->where('page', '[a-z0-9-]+')
+                    ->middleware('permission:manage_content')
+                    ->name('status');
             });
 
             Route::get('/roles', [RoleController::class, 'index'])

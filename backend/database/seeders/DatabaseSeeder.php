@@ -33,6 +33,18 @@ final class DatabaseSeeder extends Seeder
             // Sample products. Skips itself in production, where the catalog
             // belongs to the operator.
             CatalogDemoSeeder::class,
+
+            /*
+             * Storefront content.
+             *
+             * The six legally-expected pages are seeded as drafts with visibly
+             * unwritten bodies, and a default homepage layout is created so a
+             * fresh install renders a real page rather than an empty one. Both
+             * are ordinary editable rows — nothing in the code depends on any
+             * particular page or section existing.
+             */
+            CmsPageSeeder::class,
+            HomepageSeeder::class,
         ]);
     }
 }

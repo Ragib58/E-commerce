@@ -1,19 +1,28 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+
 import { fetchCatalogFilters, fetchCategoryPage } from '@/features/catalog/api';
-import { ProductGrid } from '@/features/catalog/components/product-card';
+import { ProductGrid, ProductGridSkeleton } from '@/features/catalog/components/product-card';
 import { CatalogPagination } from '@/features/catalog/components/catalog-pagination';
-import { CatalogToolbar } from '@/features/catalog/components/catalog-toolbar';
+import { CatalogSort } from '@/features/catalog/components/catalog-sort';
+import { ProductFilter } from '@/features/catalog/components/product-filter';
+import { filterKey, toProductListParams } from '@/features/catalog/lib/search-params';
 import { getStoreConfig } from '@/features/settings/lib/get-store-config';
-import type { ProductListParams } from '@/features/catalog/types';
+import type { StoreConfig } from '@/features/settings/lib/store-config';
 
 /**
  * A single category's products.
  *
  * The listing includes everything filed in the category's descendants, which is
  * what a shopper expects: clicking "Clothing" should show the shirts under
- * "Clothing > Shirts", not an empty page.
+ * "Clothing > Shirts", not an empty page. The API applies that; this page only
+ * names the category.
+ *
+ * The category facet is hidden in the rail here — the page is already scoped to
+ * one, and a second category selector inside it would produce a URL whose two
+ * category constraints contradict each other.
  */
 
 interface PageProps {
@@ -21,21 +30,28 @@ interface PageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
-export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
-  const { slug } = await params;
+export async function generateMetadata({ params, searchParams }: PageProps): Promise<Metadata> {
+  const [{ slug }, resolved] = await Promise.all([params, searchParams]);
 
   const [page, { config }] = await Promise.all([fetchCategoryPage(slug), getStoreConfig()]);
 
   if (!page) {
-    return { title: 'Category not found' };
+    return { title: 'Category not found', robots: { index: false, follow: false } };
   }
 
   const title = page.category.seo?.meta_title ?? page.category.name;
+  const isFiltered = Object.keys(resolved).length > 0;
 
   return {
-    title: `${title} — ${config.companyName}`,
+    title,
     description: page.category.seo?.meta_description ?? page.category.description ?? undefined,
-    robots: { index: config.indexable, follow: config.indexable },
+    alternates: { canonical: `/categories/${page.category.slug}` },
+    // The unfiltered category page is the canonical one; its facet permutations
+    // are not indexed. See the shop page for the reasoning.
+    robots:
+      config.indexable && !isFiltered
+        ? { index: true, follow: true }
+        : { index: false, follow: true },
     openGraph: {
       title,
       description: page.category.description ?? undefined,
@@ -44,43 +60,19 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   };
 }
 
-function toParams(searchParams: Record<string, string | string[] | undefined>): ProductListParams {
-  const single = (key: string): string | undefined => {
-    const value = searchParams[key];
-
-    return Array.isArray(value) ? value[0] : value;
-  };
-
-  const attributes: Record<string, string[]> = {};
-
-  for (const [key, value] of Object.entries(searchParams)) {
-    const attributeSlug = key.match(/^attr_(.+)$/)?.[1];
-
-    if (attributeSlug && value) {
-      attributes[attributeSlug] = (Array.isArray(value) ? value : value.split(',')).filter(Boolean);
-    }
-  }
-
-  const minPrice = single('min_price');
-  const maxPrice = single('max_price');
-  const brand = single('brand');
-
-  return {
-    sort: single('sort'),
-    page: single('page') ? Number(single('page')) : undefined,
-    brand: brand ? brand.split(',').filter(Boolean) : undefined,
-    min_price: minPrice ? Number(minPrice) : undefined,
-    max_price: maxPrice ? Number(maxPrice) : undefined,
-    in_stock: single('in_stock') === '1',
-    attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
-  };
-}
-
 export default async function CategoryPage({ params, searchParams }: PageProps) {
-  const [{ slug }, resolvedSearch] = await Promise.all([params, searchParams]);
+  const [{ slug }, resolved] = await Promise.all([params, searchParams]);
 
+  /*
+   * Fetched without filters.
+   *
+   * This call is only for the category record and its children, which the
+   * header and subcategory nav need before the grid resolves. The filtered
+   * listing streams separately below, so a slow product query does not hold
+   * back the page's identity.
+   */
   const [page, { config }, filters] = await Promise.all([
-    fetchCategoryPage(slug, toParams(resolvedSearch)),
+    fetchCategoryPage(slug),
     getStoreConfig(),
     fetchCatalogFilters(),
   ]);
@@ -89,7 +81,7 @@ export default async function CategoryPage({ params, searchParams }: PageProps) 
     notFound();
   }
 
-  const { category, products, breadcrumbs, pagination } = page;
+  const { category, breadcrumbs } = page;
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
@@ -97,33 +89,33 @@ export default async function CategoryPage({ params, searchParams }: PageProps) 
         <Link href="/" className="hover:text-foreground">
           Home
         </Link>
-        <span className="mx-2">/</span>
+        <span className="mx-2" aria-hidden="true">
+          /
+        </span>
         <Link href="/categories" className="hover:text-foreground">
           Categories
         </Link>
         {breadcrumbs.slice(0, -1).map((crumb) => (
           <span key={crumb.slug}>
-            <span className="mx-2">/</span>
+            <span className="mx-2" aria-hidden="true">
+              /
+            </span>
             <Link href={`/categories/${crumb.slug}`} className="hover:text-foreground">
               {crumb.name}
             </Link>
           </span>
         ))}
-        <span className="mx-2">/</span>
+        <span className="mx-2" aria-hidden="true">
+          /
+        </span>
         <span className="text-foreground">{category.name}</span>
       </nav>
 
-      <header className="mb-8">
+      <header className="mb-6">
         <h1 className="text-3xl font-semibold tracking-tight">{category.name}</h1>
 
         {category.description ? (
           <p className="mt-2 max-w-2xl text-muted-foreground">{category.description}</p>
-        ) : null}
-
-        {pagination ? (
-          <p className="mt-1 text-sm text-muted-foreground">
-            {pagination.total} product{pagination.total === 1 ? '' : 's'}
-          </p>
         ) : null}
       </header>
 
@@ -141,17 +133,70 @@ export default async function CategoryPage({ params, searchParams }: PageProps) 
         </nav>
       ) : null}
 
-      <CatalogToolbar filters={filters} sorts={filters.sorts} />
+      <div className="grid gap-8 lg:grid-cols-[16rem_1fr]">
+        <aside aria-label="Filters" className="hidden lg:sticky lg:top-24 lg:block lg:self-start">
+          <ProductFilter filters={filters} hideCategories />
+        </aside>
 
-      <div className="mt-6">
-        <ProductGrid
-          products={products}
-          config={config}
-          emptyMessage={`No products in ${category.name} match your selection.`}
-        />
+        <div className="min-w-0">
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div className="lg:hidden">
+              <ProductFilter filters={filters} hideCategories />
+            </div>
+
+            <CatalogSort sorts={filters.sorts} />
+          </div>
+
+          <Suspense key={filterKey(resolved)} fallback={<ProductGridSkeleton />}>
+            <CategoryResults
+              slug={slug}
+              categoryName={category.name}
+              searchParams={resolved}
+              config={config}
+            />
+          </Suspense>
+        </div>
       </div>
-
-      {pagination ? <CatalogPagination pagination={pagination} /> : null}
     </div>
+  );
+}
+
+async function CategoryResults({
+  slug,
+  categoryName,
+  searchParams,
+  config,
+}: {
+  slug: string;
+  categoryName: string;
+  searchParams: Record<string, string | string[] | undefined>;
+  config: StoreConfig;
+}) {
+  const page = await fetchCategoryPage(slug, toProductListParams(searchParams));
+
+  if (!page) {
+    // The category resolved a moment ago in the parent, so reaching here means
+    // it was withdrawn mid-render. An empty grid is the honest outcome.
+    return (
+      <ProductGrid products={[]} config={config} emptyMessage="This category is unavailable." />
+    );
+  }
+
+  return (
+    <>
+      {page.pagination ? (
+        <p className="mb-4 text-sm text-muted-foreground">
+          {page.pagination.total} product{page.pagination.total === 1 ? '' : 's'}
+        </p>
+      ) : null}
+
+      <ProductGrid
+        products={page.products}
+        config={config}
+        emptyMessage={`No products in ${categoryName} match these filters.`}
+      />
+
+      {page.pagination ? <CatalogPagination pagination={page.pagination} /> : null}
+    </>
   );
 }

@@ -81,6 +81,17 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Content',
     items: [
+      {
+        label: 'Homepage',
+        href: '/admin/homepage',
+        permissions: ['manage_content', 'manage_banners', 'view_settings'],
+      },
+      {
+        label: 'Banners',
+        href: '/admin/banners',
+        permissions: ['manage_banners', 'manage_content', 'view_settings'],
+      },
+      { label: 'Pages', href: '/admin/pages', permissions: ['manage_content', 'view_settings'] },
       { label: 'Settings', href: '/admin/settings', permissions: ['view_settings'], comingSoon: true },
       { label: 'Menus', href: '/admin/menus', permissions: ['manage_menus'], comingSoon: true },
     ],

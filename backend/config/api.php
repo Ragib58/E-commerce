@@ -39,6 +39,16 @@ return [
         'health' => (int) env('API_RATE_LIMIT_HEALTH', 30),
 
         /*
+         * Cart mutations, on their own budget.
+         *
+         * These are writes available to unauthenticated visitors, so they are
+         * the cheapest place to create rows — a separate ceiling bounds that
+         * without constraining ordinary browsing. Generous enough that a
+         * shopper adjusting quantities never notices it.
+         */
+        'cart' => (int) env('API_RATE_LIMIT_CART', 60),
+
+        /*
          * Credential endpoints.
          *
          * Two limits apply to each: a tight one keyed on email+IP, and a

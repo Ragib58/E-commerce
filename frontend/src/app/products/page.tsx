@@ -1,123 +1,156 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import Link from 'next/link';
-import { fetchCatalogFilters, fetchProducts } from '@/features/catalog/api';
-import { ProductGrid } from '@/features/catalog/components/product-card';
+
+import { fetchCatalogFilters, fetchCategories, fetchProducts } from '@/features/catalog/api';
+import { ProductGrid, ProductGridSkeleton } from '@/features/catalog/components/product-card';
 import { CatalogPagination } from '@/features/catalog/components/catalog-pagination';
-import { CatalogToolbar } from '@/features/catalog/components/catalog-toolbar';
-import { getStoreConfig } from '@/features/settings/lib/get-store-config';
+import { CatalogSort } from '@/features/catalog/components/catalog-sort';
+import { ProductFilter } from '@/features/catalog/components/product-filter';
+import { filterKey, toProductListParams } from '@/features/catalog/lib/search-params';
 import type { ProductListParams } from '@/features/catalog/types';
+import { getStoreConfig } from '@/features/settings/lib/get-store-config';
+import type { StoreConfig } from '@/features/settings/lib/store-config';
 
 /**
- * Product listing.
+ * The shop — the full product listing.
  *
- * A server component: the grid is static markup, and rendering it on the server
- * means a shopper (and a crawler) receives products in the HTML rather than
- * after a client-side fetch. Only the toolbar and pagination are interactive.
+ * A server component. The grid renders on the server so a shopper and a crawler
+ * both receive products in the HTML rather than after a client-side fetch, and
+ * so a filtered URL is a real, shareable page.
+ *
+ * Only the controls ship JavaScript: the filter rail, the sort select, and the
+ * per-card action buttons. That is the entire client bundle for this page.
+ *
+ * The grid streams inside a Suspense boundary keyed on the filter state, so
+ * changing a filter shows a skeleton immediately rather than freezing on the
+ * previous results with no feedback.
  */
 
-export async function generateMetadata(): Promise<Metadata> {
-  const { config } = await getStoreConfig();
-
-  return {
-    title: `Shop — ${config.companyName}`,
-    description: config.metaDescription,
-    robots: { index: config.indexable, follow: config.indexable },
-  };
-}
-
-/**
- * Translate the URL's query string into API parameters.
- *
- * The URL is the source of truth for filter state: it survives a refresh, can
- * be shared, and lets the back button undo a filter. Holding it in React state
- * instead would lose all three.
- */
-function toParams(searchParams: Record<string, string | string[] | undefined>): ProductListParams {
-  const single = (key: string): string | undefined => {
-    const value = searchParams[key];
-
-    return Array.isArray(value) ? value[0] : value;
-  };
-
-  const attributes: Record<string, string[]> = {};
-
-  for (const [key, value] of Object.entries(searchParams)) {
-    const attributeSlug = key.match(/^attr_(.+)$/)?.[1];
-
-    if (attributeSlug && value) {
-      attributes[attributeSlug] = (Array.isArray(value) ? value : value.split(',')).filter(Boolean);
-    }
-  }
-
-  const minPrice = single('min_price');
-  const maxPrice = single('max_price');
-  const brand = single('brand');
-
-  return {
-    search: single('search'),
-    sort: single('sort'),
-    page: single('page') ? Number(single('page')) : undefined,
-    brand: brand ? brand.split(',').filter(Boolean) : undefined,
-    min_price: minPrice ? Number(minPrice) : undefined,
-    max_price: maxPrice ? Number(maxPrice) : undefined,
-    in_stock: single('in_stock') === '1',
-    attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
-  };
-}
-
-export default async function ProductsPage({
-  searchParams,
-}: {
+interface ShopPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
-}) {
-  const resolved = await searchParams;
-  const params = toParams(resolved);
+}
 
-  // Fetched concurrently: the filter rail and the grid do not depend on each
-  // other, and awaiting them in sequence would double the page's latency.
-  const [{ config }, { products, pagination }, filters] = await Promise.all([
+export async function generateMetadata({ searchParams }: ShopPageProps): Promise<Metadata> {
+  const [{ config }, resolved] = await Promise.all([getStoreConfig(), searchParams]);
+
+  const search = typeof resolved.search === 'string' ? resolved.search : undefined;
+
+  return {
+    title: search ? `Search: ${search}` : 'Shop',
+    description: config.metaDescription,
+    /*
+     * A filtered or searched view is deliberately not indexed.
+     *
+     * Every combination of facets is a distinct URL, so indexing them puts
+     * thousands of near-identical thin pages into search results and dilutes
+     * the ranking of the canonical listing. `follow` stays on, so the products
+     * linked from those pages are still discovered.
+     */
+    robots:
+      config.indexable && Object.keys(resolved).length === 0
+        ? { index: true, follow: true }
+        : { index: false, follow: true },
+    alternates: { canonical: '/products' },
+  };
+}
+
+export default async function ShopPage({ searchParams }: ShopPageProps) {
+  const resolved = await searchParams;
+  const params = toProductListParams(resolved);
+
+  // The rail's own data does not depend on the current filters, so it is
+  // fetched alongside the config rather than after the products.
+  const [{ config }, filters, categories] = await Promise.all([
     getStoreConfig(),
-    fetchProducts(params),
     fetchCatalogFilters(),
+    fetchCategories(),
   ]);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
-      <header className="mb-8">
+      <header className="mb-6">
         <nav aria-label="Breadcrumb" className="mb-2 text-sm text-muted-foreground">
           <Link href="/" className="hover:text-foreground">
             Home
           </Link>
-          <span className="mx-2">/</span>
+          <span className="mx-2" aria-hidden="true">
+            /
+          </span>
           <span className="text-foreground">Shop</span>
         </nav>
 
         <h1 className="text-3xl font-semibold tracking-tight">
           {params.search ? `Results for “${params.search}”` : 'All products'}
         </h1>
-
-        {pagination ? (
-          <p className="mt-1 text-sm text-muted-foreground">
-            {pagination.total} product{pagination.total === 1 ? '' : 's'}
-          </p>
-        ) : null}
       </header>
 
-      <CatalogToolbar filters={filters} sorts={filters.sorts} />
+      <div className="grid gap-8 lg:grid-cols-[16rem_1fr]">
+        <aside aria-label="Filters" className="hidden lg:sticky lg:top-24 lg:block lg:self-start">
+          <ProductFilter filters={filters} categories={categories} />
+        </aside>
 
-      <div className="mt-6">
-        <ProductGrid
-          products={products}
-          config={config}
-          emptyMessage={
-            params.search
-              ? `No products match “${params.search}”.`
-              : 'No products are available yet.'
-          }
-        />
+        <div className="min-w-0">
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            {/* The mobile trigger and sheet. Hidden on desktop, where the rail
+                above is always visible. */}
+            <div className="lg:hidden">
+              <ProductFilter filters={filters} categories={categories} />
+            </div>
+
+            <CatalogSort sorts={filters.sorts} />
+          </div>
+
+          {/*
+            Keyed on the filter state so a filter change remounts the boundary
+            and shows the skeleton. Without the key React keeps the previous
+            subtree mounted and the page appears frozen while the server works.
+          */}
+          <Suspense key={filterKey(resolved)} fallback={<ProductGridSkeleton />}>
+            <ProductResults params={params} config={config} search={params.search} />
+          </Suspense>
+        </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The grid and its pagination.
+ *
+ * Its own async component so the filter rail and page chrome render
+ * immediately while the product query streams in behind a skeleton.
+ */
+async function ProductResults({
+  params,
+  config,
+  search,
+}: {
+  params: ProductListParams;
+  config: StoreConfig;
+  search?: string;
+}) {
+  const { products, pagination } = await fetchProducts(params);
+
+  return (
+    <>
+      {pagination ? (
+        <p className="mb-4 text-sm text-muted-foreground">
+          {pagination.total} product{pagination.total === 1 ? '' : 's'}
+        </p>
+      ) : null}
+
+      <ProductGrid
+        products={products}
+        config={config}
+        emptyMessage={
+          search
+            ? `No products match “${search}”. Try a different search, or clear your filters.`
+            : 'No products match these filters. Try widening your selection.'
+        }
+      />
 
       {pagination ? <CatalogPagination pagination={pagination} /> : null}
-    </div>
+    </>
   );
 }

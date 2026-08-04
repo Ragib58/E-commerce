@@ -3,6 +3,7 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
+import { useSessionMerge } from '@/features/shopping/hooks/use-session-merge';
 import { useRegister } from '../hooks/use-customer-auth';
 import { registerSchema, type RegisterInput } from '../schemas';
 import { applyApiErrors, Field, FormError, SubmitButton } from './form-controls';
@@ -10,6 +11,7 @@ import { applyApiErrors, Field, FormError, SubmitButton } from './form-controls'
 export function RegisterForm() {
   const router = useRouter();
   const registerMutation = useRegister();
+  const mergeGuestSession = useSessionMerge();
 
   const {
     register,
@@ -31,6 +33,10 @@ export function RegisterForm() {
   const onSubmit = handleSubmit(async (values) => {
     try {
       await registerMutation.mutateAsync(values);
+
+      // A shopper who filled a basket and then created an account to check out
+      // keeps it. Best-effort and never throws — see useSessionMerge.
+      await mergeGuestSession();
 
       // Registration issues a token immediately, but the account is
       // unverified — send the user to the page that explains what to do next

@@ -32,3 +32,18 @@ Schedule::command('queue:prune-batches --hours=336')
     ->daily()
     ->onOneServer()
     ->withoutOverlapping();
+
+/*
+ * Abandoned guest carts.
+ *
+ * Every anonymous visitor who adds an item creates a row whose only key lives
+ * in one browser's cookie; once that is gone the row is unreachable by anyone.
+ * Signed-in customers' carts are never touched — see the command.
+ *
+ * Scheduled off-peak: the deletion cascades into cart_items, and doing that
+ * during trading hours competes with live shoppers for the same tables.
+ */
+Schedule::command('carts:prune')
+    ->dailyAt('03:20')
+    ->onOneServer()
+    ->withoutOverlapping();

@@ -1,109 +1,120 @@
+import type { Metadata } from 'next';
+
 import { getStoreConfig } from '@/features/settings/lib/get-store-config';
-import { formatPrice } from '@/features/settings/lib/store-config';
-import { ConnectionStatus } from '@/features/health/components/connection-status';
+import { fetchHomepage } from '@/features/content/api';
+import { SectionRenderer } from '@/features/content/components/section-renderer';
 
 /**
- * Homepage.
+ * The storefront homepage.
  *
- * In this foundation phase its job is to prove the wiring: it renders content
- * fetched from the Laravel settings API and shows a live dependency report, so
- * "is the stack connected end to end?" is answerable by loading one page.
+ * Composed entirely from the API response. There is no section list here, no
+ * hero markup, no rail of featured products — the page fetches an ordered array
+ * of sections and maps each one through SectionRenderer. Adding a section,
+ * reordering the page, or scheduling a campaign is an admin action against the
+ * database, never a change to this file.
  *
- * The marketing storefront replaces this content in a later phase.
+ * The consequence worth stating: **this component contains no business
+ * content.** Every string a shopper reads here — headings, banner copy, calls
+ * to action — originates in the admin panel. The only literal text below is the
+ * empty-state and error copy, which describes the *application's* state rather
+ * than the store's merchandising.
+ *
+ * Rendered as an ISR page rather than force-dynamic: the payload is identical
+ * for every visitor, so it is cached and revalidated by tag when an admin
+ * saves. The window is short because sections carry scheduling windows that
+ * open and close with no admin action behind them, and therefore with no
+ * revalidation webhook to trigger.
  */
 
-// Rendered per request rather than statically: the page displays live health
-// data, which a build-time snapshot would render meaningless.
-export const dynamic = 'force-dynamic';
+export const revalidate = 60;
+
+/**
+ * Homepage metadata, from the admin-managed settings.
+ *
+ * `title.absolute` is deliberate: it suppresses the root layout's
+ * `%s — Store` template so the homepage shows the store's own meta title rather
+ * than "Home — Store".
+ */
+export async function generateMetadata(): Promise<Metadata> {
+  const { config } = await getStoreConfig();
+
+  return {
+    title: { absolute: config.metaTitle },
+    description: config.metaDescription,
+    alternates: { canonical: '/' },
+    openGraph: {
+      type: 'website',
+      url: '/',
+      siteName: config.companyName,
+      title: config.metaTitle,
+      description: config.metaDescription,
+      images: config.ogImage ? [{ url: config.ogImage, width: 1200, height: 630 }] : undefined,
+    },
+  };
+}
 
 export default async function HomePage() {
-  const { config, version, isFallback } = await getStoreConfig();
+  // Issued concurrently: the store config and the homepage payload do not
+  // depend on each other, and awaiting them in sequence would add a round trip
+  // to every cold render.
+  const [{ config }, homepage] = await Promise.all([getStoreConfig(), fetchHomepage()]);
+
+  if (homepage.sections.length === 0) {
+    return <EmptyHomepage isFallback={homepage.isFallback} companyName={config.companyName} />;
+  }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
-      <section className="max-w-2xl">
-        <p className="text-sm font-medium text-primary">Foundation phase</p>
-        <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">
-          {config.companyName}
-        </h1>
-        {config.tagline ? (
-          <p className="mt-4 text-lg text-muted-foreground">{config.tagline}</p>
-        ) : null}
-        {config.brandDescription ? (
-          <p className="mt-3 text-muted-foreground">{config.brandDescription}</p>
-        ) : null}
-      </section>
+    <>
+      {homepage.sections.map((section, index) => (
+        <SectionRenderer
+          key={section.id}
+          section={section}
+          config={config}
+          // Exactly one section carries the above-the-fold hint.
+          isFirst={index === 0}
+        />
+      ))}
+    </>
+  );
+}
+
+/**
+ * Shown when the homepage has no sections.
+ *
+ * The two causes are distinguished because they call for different actions: an
+ * unreachable API is an operational fault, while an unconfigured homepage is a
+ * task waiting in the admin panel. One message for both would send an operator
+ * hunting for the wrong problem.
+ */
+function EmptyHomepage({
+  isFallback,
+  companyName,
+}: {
+  isFallback: boolean;
+  companyName: string;
+}) {
+  return (
+    <div className="mx-auto flex min-h-[60vh] max-w-2xl flex-col items-center justify-center px-4 py-20 text-center">
+      <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{companyName}</h1>
 
       {isFallback ? (
         <div
           role="alert"
-          className="mt-8 rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm"
+          className="mt-6 w-full rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm"
         >
-          <p className="font-medium text-destructive">Settings API unreachable</p>
+          <p className="font-medium text-destructive">Storefront content is unavailable</p>
           <p className="mt-1 text-muted-foreground">
-            Neutral fallback values are being displayed. Confirm the Laravel API is running and that{' '}
+            The content API could not be reached. Confirm the Laravel API is running and that{' '}
             <code className="rounded bg-muted px-1 py-0.5">NEXT_PUBLIC_API_URL</code> is correct.
           </p>
         </div>
-      ) : null}
-
-      <section className="mt-12 grid gap-6 md:grid-cols-2">
-        <ConnectionStatus />
-
-        <div className="rounded-lg border border-border bg-card p-6">
-          <h2 className="text-sm font-semibold">Dynamic configuration</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Every value below is served by the Laravel settings API and editable from the admin
-            panel. None is hardcoded in this application.
-          </p>
-
-          <dl className="mt-4 space-y-2.5 text-sm">
-            <ConfigRow label="Company name" value={config.companyName} />
-            <ConfigRow label="Website title" value={config.websiteTitle} />
-            <ConfigRow
-              label="Currency"
-              value={`${config.business.currency} · ${formatPrice(config, 1234.5)}`}
-            />
-            <ConfigRow label="Primary colour" value={config.colors.primary} swatch />
-            <ConfigRow label="Accent colour" value={config.colors.accent} swatch />
-            <ConfigRow label="Button colour" value={config.colors.button} swatch />
-            <ConfigRow label="Support email" value={config.contact.email} />
-            <ConfigRow label="Logo" value={config.logo ?? 'not uploaded'} />
-            <ConfigRow label="Favicon" value={config.favicon ?? 'not uploaded'} />
-            <ConfigRow
-              label="Analytics"
-              value={config.analytics.googleAnalyticsId ?? 'not configured'}
-            />
-            <ConfigRow label="Settings version" value={version} />
-          </dl>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function ConfigRow({
-  label,
-  value,
-  swatch = false,
-}: {
-  label: string;
-  value?: string | null;
-  swatch?: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 border-b border-border pb-2 last:border-0">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="flex items-center gap-2 font-medium">
-        {swatch && value ? (
-          <span
-            aria-hidden="true"
-            className="size-3.5 rounded-full border border-border"
-            style={{ backgroundColor: value }}
-          />
-        ) : null}
-        <span className="truncate">{value ?? '—'}</span>
-      </dd>
+      ) : (
+        <p className="mt-4 text-muted-foreground">
+          This homepage has no sections yet. Add and arrange them under{' '}
+          <span className="font-medium text-foreground">Content → Homepage</span> in the admin
+          panel.
+        </p>
+      )}
     </div>
   );
 }

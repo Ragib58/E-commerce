@@ -9,6 +9,8 @@ use App\Notifications\CustomerVerifyEmailNotification;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -108,6 +110,30 @@ class User extends Authenticatable implements MustVerifyEmail
             'last_login_at' => now(),
             'last_login_ip' => $ipAddress,
         ])->saveQuietly();
+    }
+
+    /**
+     * The customer's cart.
+     *
+     * `hasOne` rather than `hasMany` even though the column is not unique: a
+     * customer conceptually has one cart, and the nullable-unique alternative
+     * would block the brief window during a guest-cart merge when the old cart
+     * and the just-claimed one both point at this user. CartService reconciles
+     * that window and leaves exactly one behind.
+     *
+     * @return HasOne<Cart, $this>
+     */
+    public function cart(): HasOne
+    {
+        return $this->hasOne(Cart::class)->latestOfMany();
+    }
+
+    /**
+     * @return HasMany<WishlistItem, $this>
+     */
+    public function wishlistItems(): HasMany
+    {
+        return $this->hasMany(WishlistItem::class);
     }
 
     /**

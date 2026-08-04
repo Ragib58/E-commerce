@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation';
 import { fetchProduct } from '@/features/catalog/api';
 import { ProductDetail } from '@/features/catalog/components/product-detail';
 import { ProductGrid } from '@/features/catalog/components/product-card';
+import { RecentlyViewedRail } from '@/features/shopping/components/recently-viewed-rail';
 import { getStoreConfig } from '@/features/settings/lib/get-store-config';
 
 /**
@@ -116,11 +117,24 @@ export default async function ProductPage({ params }: PageProps) {
       <ProductDetail product={product} config={config} />
 
       {related.length > 0 ? (
-        <section className="mt-16">
-          <h2 className="mb-6 text-xl font-semibold tracking-tight">You may also like</h2>
-          <ProductGrid products={related} config={config} />
+        <section aria-labelledby="related-heading" className="mt-16">
+          <h2 id="related-heading" className="mb-6 text-xl font-semibold tracking-tight">
+            You may also like
+          </h2>
+          <ProductGrid products={related} config={config} showQuickAdd={false} />
         </section>
       ) : null}
+
+      {/*
+        Per-device browsing history, so necessarily a client component — the
+        server cannot know what this browser has seen. It renders nothing at all
+        when there is no history, so it costs a first-time visitor no layout.
+        The current product is excluded: a rail led by the page you are on is
+        noise.
+      */}
+      <div className="mt-16">
+        <RecentlyViewedRail exclude={product.id} />
+      </div>
     </div>
   );
 }

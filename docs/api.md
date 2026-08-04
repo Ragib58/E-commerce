@@ -417,6 +417,350 @@ panel can render the change it just made without refetching the ledger.
 
 ---
 
+## Shopping cart
+
+Open to guests and signed-in customers alike. There is no `auth` middleware: the
+cart *is* the authorization boundary, and a request can only act on the cart its
+bearer token or `X-Cart-Token` header resolves to. Full reasoning in
+[storefront.md](storefront.md).
+
+**No endpoint here accepts a price.** Unit price, discount, line total,
+subtotal, and tax are recomputed from the catalog on every call. A `price` in a
+request body is discarded before it reaches the service — there is no rule
+rejecting it because there is no field to submit it into.
+
+### The guest credential
+
+An anonymous visitor's first cart mutation mints a token, returned in the
+`X-Cart-Token` **response** header. The client stores it and sends it back on
+subsequent requests in the `X-Cart-Token` **request** header.
+
+Not a cookie: the API is stateless by design, and a cookie the browser attaches
+automatically would reintroduce a CSRF surface. The header must be listed in
+CORS `exposed_headers` — without that the browser hides it and every guest
+request creates a fresh empty cart.
+
+Resolution rules:
+
+| Request | Resolves to |
+|---|---|
+| Authenticated | That user's cart, **always** — a supplied token is ignored |
+| Guest, valid token | The guest cart with that token, only while `user_id` is null |
+| Guest, no token | A new cart — but only on an unsafe method, so a `GET` never inserts a row |
+
+### `GET /cart`
+
+Returns an empty structure rather than `404` when none exists: a shopper who
+has never added anything has an empty cart, not a missing one.
+
+```json
+{
+  "data": {
+    "id": 12,
+    "items": [
+      {
+        "id": 34,
+        "quantity": 2,
+        "product": { "id": "uuid", "name": "…", "slug": "…", "thumbnail": "…", "type": "simple" },
+        "variant": { "id": "uuid", "name": "Medium / Red" },
+        "unit_price": 2500,
+        "list_price": 3000,
+        "line_total": 5000,
+        "line_discount": 1000,
+        "is_available": true,
+        "max_quantity": 8,
+        "issues": []
+      }
+    ],
+    "item_count": 2,
+    "totals": { "subtotal": 5000, "discount": 1000, "tax": 500, "shipping": null, "total": 5500 },
+    "coupon": { "code": null, "applied": false, "discount": 0, "message": null },
+    "has_issues": false
+  }
+}
+```
+
+`shipping` is `null`, not `0`: it depends on a delivery address the cart does
+not have, and a placeholder that changes at checkout reads as a hidden cost.
+
+`max_quantity` is `null` for products that are not stock-tracked — a digital
+download, or one on backorder — which is deliberately distinct from `0`.
+
+### Line issues
+
+A line that can no longer be sold is **returned and flagged**, not dropped. A
+shopper whose item vanished with no explanation assumes the site lost it.
+Flagged lines are excluded from the totals.
+
+| Code | Meaning |
+|---|---|
+| `UNAVAILABLE` | The product is no longer published |
+| `VARIANT_UNAVAILABLE` | The chosen option was deactivated |
+| `OUT_OF_STOCK` | Nothing left, and backorder is off |
+| `INSUFFICIENT_STOCK` | Fewer remain than the line holds; carries `available` |
+
+### Mutations
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/cart/items` | `{ product, variant?, quantity?, options? }` |
+| `PATCH` | `/cart/items/{item}` | `{ quantity }` — **0 removes the line** |
+| `DELETE` | `/cart/items/{item}` | |
+| `DELETE` | `/cart` | Empty the cart |
+| `POST` | `/cart/coupon` | `{ coupon_code }` — stored, never discounted |
+| `POST` | `/cart/merge` | Claim a guest cart; authenticated only |
+
+Every one returns the **whole recomputed cart**. A quantity change moves the
+subtotal, the tax, and possibly another line's availability, so returning one
+item would force the client to refetch or recompute — and a client that computes
+totals is a client whose totals can be wrong.
+
+`product` accepts a slug or a uuid. `variant` is required for variable products
+and refused for the rest, and is scoped to the named product — a variant id from
+a different product cannot be attached to a cheaper one.
+
+Item ids are scoped to the requesting cart, so an id from someone else's basket
+is a `422` rather than a successful mutation of a stranger's cart.
+
+### `POST /cart/coupon` — placeholder
+
+The code is stored and echoed back with `applied: false` and an explanatory
+message. Promotions are a later phase; reporting a zero discount as "applied"
+would render as a broken promotion rather than an unbuilt feature. Storing it
+means a shopper arriving with a code does not lose it.
+
+### `POST /cart/merge`
+
+Sums quantities for the same `(product, variant)`, re-clamps to available stock,
+deletes the guest row, and clears its token. Idempotent, so a client calling it
+on every page load cannot double a quantity. Returns `401` for an
+unauthenticated caller.
+
+### Rate limiting
+
+Cart mutations use the `cart` limiter (`API_RATE_LIMIT_CART`, default 60/min)
+rather than the public read budget — they are writes available to
+unauthenticated visitors. Keyed on the user, else the cart token, else the IP.
+
+---
+
+## Wishlist
+
+Authenticated only, unlike the cart. A guest's saved items live in localStorage
+and are merged here on sign-in — a server-side anonymous wishlist costs what a
+cart does while being worth far less, since the shopper cannot return to it from
+another device.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/wishlist` | Returns **products**, so the client renders its usual card |
+| `POST` | `/wishlist` | `{ product }` — idempotent |
+| `DELETE` | `/wishlist/{product}` | |
+| `POST` | `/wishlist/merge` | `{ products: [...] }` — skips unknown ids |
+
+Write responses return `{ saved: [...uuid] }`, the full set rather than the one
+that changed, so a client replaces its notion of what is saved wholesale instead
+of patching it.
+
+Unpublished products are omitted from the listing rather than flagged. Unlike a
+cart line — where a shopper needs to know why their total changed — a saved item
+that is no longer for sale is simply not shown, and reappears if republished.
+
+`merge` skips identifiers that do not resolve rather than failing, so one stale
+localStorage entry cannot cost a shopper the rest of their list.
+
+---
+
+## `POST /catalog/products/lookup`
+
+Resolves a list of product identifiers to full products, **in the order asked
+for**. Serves the compare tray and the recently-viewed rail, both of which hold
+their list on the client.
+
+```json
+{ "products": ["uuid-or-slug", "…"] }
+```
+
+`POST` despite being a read: twenty-plus uuids overflow practical URL length
+limits, and a truncated query string would silently drop products rather than
+failing visibly. Capped at 24. Identifiers that no longer resolve drop out
+rather than leaving a hole the client must handle.
+
+Open to guests.
+
+---
+
+## Storefront content
+
+The dynamic homepage, banners, and CMS pages. Unauthenticated and read-only;
+every query is constrained to *live* records — a publishable status **and** an
+open scheduling window — so no parameter can surface a draft page or a campaign
+that has not launched. Full reasoning in [content.md](content.md).
+
+### `GET /homepage`
+
+The entire homepage in one response: every live section, in display order, with
+its products, categories, or banners already resolved. One request rather than
+one per section — a six-rail page would otherwise open with a six-deep waterfall
+on every cold visit.
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 3,
+      "type": "featured_products",
+      "name": "Featured products",
+      "heading": "Featured",
+      "subheading": "Hand-picked from the catalog",
+      "settings": { "limit": 8, "columns": 4, "show_view_all": true },
+      "style": { "background_color": null, "container_width": "default" },
+      "sort_order": 20,
+      "starts_at": null,
+      "ends_at": null,
+      "items": [ /* ProductResource objects */ ],
+      "has_content": true
+    }
+  ],
+  "meta": { "section_count": 1, "is_configured": true }
+}
+```
+
+`items` is heterogeneous — products, banners, categories, or testimonials
+depending on `type`. `meta.is_configured` distinguishes "no sections yet" from
+"the request failed", which produce an identical empty array but call for very
+different UI.
+
+A section whose content resolves to nothing is omitted entirely. Resolved id
+lists are stripped from `settings`: they have already become `items`.
+
+### `GET /banners`
+
+| Parameter | Notes |
+|---|---|
+| `placement` | One of `hero_slider`, `homepage_promo`, `category_top`, `sidebar`, `checkout`, `popup`. An unknown value returns `422` rather than being ignored. |
+| `limit` | Clamped to 24. |
+
+The public payload omits `status`, `starts_at`, and `ends_at`: the endpoint only
+ever returns live banners, so there is nothing for a client to filter.
+
+### `GET /pages`
+
+Published pages as titles and slugs, for footer navigation. **Bodies are
+omitted** — a footer needs six links, and sending six full policy documents to
+render them would dominate the payload of every page on the site.
+
+### `GET /pages/{slug}`
+
+One page, with its body and SEO block. A draft, scheduled, or expired page
+returns `404` — deliberately indistinguishable from a slug that never existed.
+
+```json
+{
+  "data": {
+    "title": "Refund Policy",
+    "slug": "refund-policy",
+    "content": "<p>Sanitised HTML.</p>",
+    "featured_image": "https://…",
+    "seo": {
+      "title": "Returns and refunds",
+      "description": "…",
+      "og_image": "https://…",
+      "indexable": true
+    },
+    "published_at": "2026-05-02T09:00:00+00:00"
+  }
+}
+```
+
+`seo.title` falls back to the page title, and `og_image` to the featured image —
+an empty tag is worse than a derived one.
+
+| Code | Meaning |
+|---|---|
+| `PAGE_NOT_FOUND` | No live page at this slug |
+| `INVALID_PLACEMENT` | Unknown banner placement |
+
+---
+
+## Admin content management
+
+Gated on `manage_content` (homepage structure, pages, banners) or
+`manage_banners` (banners only). Read paths also admit `view_settings`.
+
+Unlike the public surface, these return disabled, scheduled, and expired
+records — an operator cannot edit what the panel will not show them.
+
+| Method | Path | Permission |
+|---|---|---|
+| `GET` | `/admin/homepage/sections` | read |
+| `GET` | `/admin/homepage/preview?at=` | read |
+| `POST` | `/admin/homepage/sections` | `manage_content` |
+| `PATCH` | `/admin/homepage/sections/{id}` | `manage_content` |
+| `DELETE` | `/admin/homepage/sections/{id}` | `manage_content` |
+| `PATCH` | `/admin/homepage/sections/{id}/status` | `manage_content` |
+| `PUT` | `/admin/homepage/sections/reorder` | `manage_content` |
+| `GET` | `/admin/banners` | read |
+| `POST` | `/admin/banners` | `manage_banners` |
+| `PATCH` | `/admin/banners/{id}` | `manage_banners` |
+| `DELETE` | `/admin/banners/{id}` | `manage_banners` |
+| `PUT` | `/admin/banners/reorder` | `manage_banners` |
+| `GET` | `/admin/pages` | read |
+| `POST` | `/admin/pages` | `manage_content` |
+| `GET` | `/admin/pages/{slug}` | read |
+| `PATCH` | `/admin/pages/{slug}` | `manage_content` |
+| `DELETE` | `/admin/pages/{slug}` | `manage_content` |
+| `PATCH` | `/admin/pages/{slug}/status` | `manage_content` |
+
+### `GET /admin/homepage/sections`
+
+Returns every section plus `meta.available_types` — the section-type catalogue
+with each type's label, description, repeatability, and default settings. The
+panel's "add section" menu and per-type form controls come from there, so a new
+section type is a backend change alone.
+
+### `GET /admin/homepage/preview`
+
+Renders the homepage exactly as the storefront would receive it, optionally at
+an arbitrary moment via `?at=<ISO-8601>`. Uncached and resolved live — a preview
+served from cache would answer a question nobody asked.
+
+### `PUT /admin/homepage/sections/reorder`
+
+```json
+{ "items": [ { "id": 3, "sort_order": 0 }, { "id": 7, "sort_order": 10 } ] }
+```
+
+The whole ordering in one transaction. A drop moves every section between the
+old and new positions, so sending them individually would leave the page in an
+order nobody chose if one call failed.
+
+### Banner and page uploads
+
+`POST /admin/banners` and the two update routes accept multipart. Updates are
+sent as `POST` with `_method=PATCH`: PHP does not populate `$_POST` for a
+multipart `PATCH` body, so the fields would arrive empty.
+
+The primary image is required on create and optional on update — an edit that
+changes only a schedule must not force a re-upload.
+
+### Validation notes
+
+- `link_url` and `cta_url` accept `http(s)://…` or a path beginning `/` only.
+  `url` validation alone would admit `javascript:`, which is a stored XSS
+  payload the moment it reaches an href.
+- `ends_at` must be later than `starts_at`. On a partial update the comparison
+  runs against the *merged* state, since a request sending only `ends_at` would
+  otherwise satisfy an `after:starts_at` rule vacuously.
+- A non-repeatable section type cannot be added twice (`422` on `type`).
+- Reserved slugs (`products`, `checkout`, `admin`, …) are refused.
+- A system page cannot be deleted (`422`), but is fully editable.
+- `settings` is merged over what is stored, not replaced — a scheduling form
+  that omitted `settings.items` would otherwise wipe every testimonial.
+
+---
+
 ## Frontend webhook
 
 ### `POST /api/revalidate`
@@ -429,6 +773,8 @@ job when admin content changes.
 ```json
 { "tags": ["settings"], "keys": ["general.company_name"] }
 ```
+
+Known tags: `settings`, `menus`, `catalog`, `content`.
 
 Authentication is a timing-safe comparison over SHA-256 digests, so neither the
 secret's length nor its prefix leaks through response timing. An unset secret
