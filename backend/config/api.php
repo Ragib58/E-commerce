@@ -49,6 +49,17 @@ return [
         'cart' => (int) env('API_RATE_LIMIT_CART', 60),
 
         /*
+         * Placing an order — the tightest storefront budget.
+         *
+         * The one endpoint that opens a transaction, decrements stock, and
+         * writes an order. Unlike browsing or cart edits there is no legitimate
+         * reason to call it repeatedly, so the ceiling is low. It is a backstop
+         * against retry storms, not the duplicate-order defence — that is the
+         * unique index on `orders.idempotency_key`.
+         */
+        'checkout_place' => (int) env('API_RATE_LIMIT_CHECKOUT_PLACE', 10),
+
+        /*
          * Credential endpoints.
          *
          * Two limits apply to each: a tight one keyed on email+IP, and a

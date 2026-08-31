@@ -133,6 +133,38 @@ final class RouteServiceProvider extends ServiceProvider
                 ], 429));
         });
 
+        /*
+         * Order placement — the tightest budget on the storefront.
+         *
+         * This is the one endpoint that opens a transaction, decrements stock,
+         * and writes an order. A retry storm here is far more expensive than
+         * one against a read, and unlike the rest of checkout there is no
+         * legitimate reason to call it repeatedly: a shopper places an order
+         * once.
+         *
+         * The limit is a backstop, not the duplicate-order defence. That is the
+         * unique index on `orders.idempotency_key` — a rate limit slows a
+         * double submission down, it does not make it safe.
+         *
+         * Keyed like the cart limiter: user, then checkout token, then IP, so
+         * several guests behind one NAT do not share an allowance.
+         */
+        RateLimiter::for('checkout-place', function (Request $request): Limit {
+            $user = $request->user();
+
+            $key = $user !== null
+                ? $user::class . ':' . $user->getAuthIdentifier()
+                : ($request->route('token') ?: (string) $request->ip());
+
+            return Limit::perMinute((int) config('api.rate_limits.checkout_place', 10))
+                ->by((string) $key)
+                ->response(fn (): \Illuminate\Http\JsonResponse => response()->json([
+                    'success' => false,
+                    'message' => 'Too many attempts to place this order. Please wait a moment and try again.',
+                    'code' => 'RATE_LIMITED',
+                ], 429));
+        });
+
         // Health probes get their own budget so a traffic spike never blinds
         // monitoring, and monitoring never eats into the public budget.
         RateLimiter::for('health', function (Request $request): Limit {

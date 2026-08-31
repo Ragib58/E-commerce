@@ -45,6 +45,13 @@ final class DatabaseSeeder extends Seeder
              */
             CmsPageSeeder::class,
             HomepageSeeder::class,
+
+            /*
+             * Delivery methods, so a fresh install can complete a checkout
+             * without first defining a shipping service. Ordinary editable
+             * rows — the seeder never overwrites one an operator has changed.
+             */
+            ShippingMethodSeeder::class,
         ]);
     }
 }

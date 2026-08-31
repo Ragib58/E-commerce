@@ -11,6 +11,7 @@ use App\Models\Brand;
 use App\Models\Category;
 use App\Models\CmsPage;
 use App\Models\HomepageSection;
+use App\Models\Order;
 use App\Models\Product;
 use App\Models\Role;
 use App\Policies\AdminPolicy;
@@ -19,6 +20,7 @@ use App\Policies\BrandPolicy;
 use App\Policies\CategoryPolicy;
 use App\Policies\CmsPagePolicy;
 use App\Policies\HomepageSectionPolicy;
+use App\Policies\OrderPolicy;
 use App\Policies\ProductPolicy;
 use App\Policies\RolePolicy;
 use Illuminate\Support\Facades\Gate;
@@ -41,6 +43,14 @@ final class AuthServiceProvider extends ServiceProvider
         CmsPage::class => CmsPagePolicy::class,
         Banner::class => BannerPolicy::class,
         HomepageSection::class => HomepageSectionPolicy::class,
+
+        /*
+         * The one policy reached by both principals. An Admin reads any order;
+         * a customer reads only their own. See OrderPolicy — each method
+         * branches on the actor's type, which is safe because Admin and User
+         * are separate models behind separate guards.
+         */
+        Order::class => OrderPolicy::class,
     ];
 
     public function boot(): void

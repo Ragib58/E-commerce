@@ -595,6 +595,18 @@ final class CartService
             'variant' => $variant === null ? null : [
                 'id' => $variant->uuid,
                 'name' => $variant->buildName(),
+                /*
+                 * The chosen attribute values, resolved to labels:
+                 * `{"Size": "M", "Colour": "Navy"}`.
+                 *
+                 * Resolved here rather than left as attribute ids because this
+                 * is what an order line snapshots at placement — an admin
+                 * renaming an attribute or deleting a value must not change
+                 * what an existing packing slip tells a picker to put in the
+                 * box. The relations are already eager-loaded for pricing, so
+                 * this costs no extra query.
+                 */
+                'options' => $this->variantOptions($variant),
             ],
 
             /*
@@ -656,6 +668,38 @@ final class CartService
         }
 
         return (int) round($taxableSubtotal * ($rate / 100));
+    }
+
+    /**
+     * A variant's attribute selections as attribute-name => value-label.
+     *
+     * Returns null rather than an empty array when the relations are not
+     * loaded, so a caller can distinguish "this variant has no attributes" from
+     * "we did not look" — an order line that snapshotted `[]` because of a
+     * missing eager load would silently lose the size and colour it was
+     * supposed to preserve.
+     *
+     * @return array<string, string>|null
+     */
+    private function variantOptions(ProductVariant $variant): ?array
+    {
+        if (! $variant->relationLoaded('attributeValues')) {
+            return null;
+        }
+
+        $options = [];
+
+        foreach ($variant->attributeValues as $value) {
+            $attribute = $value->relationLoaded('attribute') ? $value->attribute : null;
+
+            if ($attribute === null) {
+                continue;
+            }
+
+            $options[$attribute->name] = $value->value;
+        }
+
+        return $options === [] ? null : $options;
     }
 
     private function thumbnailUrl(Product $product): ?string

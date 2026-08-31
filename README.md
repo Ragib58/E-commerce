@@ -4,10 +4,61 @@ A production-ready, fully dynamic e-commerce platform. Laravel 12 API + Blade
 admin panel, Next.js 16 storefront, MySQL, Redis, and S3-compatible storage —
 all containerised.
 
-**Phases 1–6 complete:** foundation; authentication and role-based access
+**Phases 1–7 complete:** foundation; authentication and role-based access
 control; dynamic store settings, branding, and theme management; product
 catalog and inventory; the dynamic homepage builder and CMS; the customer
-storefront and cart. Checkout, orders, and payments are later phases.
+storefront and cart; checkout and order management. Payment gateway
+integration is a later phase — offline methods are fully functional, and
+gateway-backed ones are refused explicitly rather than silently pending.
+
+## Checkout and orders
+
+Seven steps — customer, shipping address, billing address, shipping method,
+payment method, review, place — for guests and registered customers alike, on
+one code path.
+
+**The server owns the sequence.** Each answer is persisted as it is given, and
+a request that jumps ahead is refused with the step it must complete first.
+Keeping the sequence in the client would make it a suggestion rather than a
+constraint: a crafted request could post straight to "place order" having never
+chosen a shipping method, and the order would be created with a null shipping
+cost.
+
+The checkout session stores *choices* — an address, a shipping method id, a
+payment method — and no money at all. A total persisted at step four and trusted
+at step seven is a three-step window in which the catalog can move, and a
+writable surface a crafted request can aim at.
+
+Orders invert the cart's rule. A cart line re-derives its price so it cannot go
+stale; an order line **snapshots** everything — name, sku, variant, unit price,
+tax — so it cannot be rewritten. An invoice must render identically in five
+years, after the product has been renamed or archived. Price manipulation is not
+defended against so much as made unrepresentable: no request field maps to any
+money column on an order.
+
+Three failures the creation path exists to prevent:
+
+- **Duplicate orders.** A unique index on `orders.idempotency_key`, not a
+  check-then-insert — two concurrent requests can both pass a check before
+  either inserts.
+- **Price manipulation.** No endpoint accepts a price, a shipping cost, or a
+  total, at any step.
+- **Stock races.** Every decrement runs through `InventoryService` under
+  `lockForUpdate()` inside the placing transaction. Reservations taken at the
+  review step narrow the window for the shopper's benefit; the lock is what
+  makes it correct.
+
+A cart does not reserve stock, but a checkout does — taken late, expiring in
+fifteen minutes. Checkout is bounded and intentional in a way a cart is not, and
+losing the last unit at the final click is the worst moment to find out.
+
+Nine order statuses and five payment statuses move independently, because they
+genuinely do: a cash-on-delivery order ships while payment is pending. Every
+transition validates against one authoritative map, writes an audit row,
+restocks where required, and fires its event — in a single transaction. The
+model **throws** on a status assigned any other way.
+
+See [docs/orders.md](docs/orders.md).
 
 ## Storefront and cart
 
@@ -176,7 +227,7 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 │       ├── lib/            api client, env validation, theme, query client
 │       └── components/     ui/, layout/, providers/
 ├── docker/           nginx/ php/ mysql/ redis/
-└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · setup.md
+└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · orders.md · setup.md
 ```
 
 ## Endpoints
@@ -188,12 +239,17 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 | GET | `/api/v1/settings/public` | Storefront configuration |
 | POST | `/api/v1/auth/*` | Customer register, login, logout, password, profile |
 | POST | `/api/v1/admin/auth/*` | Staff login, logout, password |
+| — | `/api/v1/cart/*` | Cart, for guests and customers alike |
+| — | `/api/v1/checkout/*` | The seven steps, guest and registered |
+| — | `/api/v1/orders/*` | Own orders, tracking, cancellation, guest lookup |
+| — | `/api/v1/admin/orders/*` | Search, status, notes, refunds, invoices, packing slips |
 | — | `/api/v1/admin/admins/*` | Staff management, roles, permissions |
 | — | `/api/v1/admin/settings/*` | Read, bulk-update, media upload, cache flush |
 | — | `/admin/settings` | *(Blade)* Settings management panel |
 | POST | `/api/revalidate` | *(Next.js)* Cache purge webhook |
 
-See [docs/api.md](docs/api.md), [docs/settings.md](docs/settings.md), and
+See [docs/api.md](docs/api.md), [docs/orders.md](docs/orders.md),
+[docs/settings.md](docs/settings.md), and
 [docs/authentication.md](docs/authentication.md).
 
 ## Access control

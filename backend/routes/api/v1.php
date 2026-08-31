@@ -18,10 +18,13 @@ use App\Http\Controllers\Api\V1\Auth\PasswordResetController;
 use App\Http\Controllers\Api\V1\Admin\BannerController;
 use App\Http\Controllers\Api\V1\Admin\CmsPageController;
 use App\Http\Controllers\Api\V1\Admin\HomepageController;
+use App\Http\Controllers\Api\V1\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\V1\CartController;
 use App\Http\Controllers\Api\V1\CatalogController;
+use App\Http\Controllers\Api\V1\CheckoutController;
 use App\Http\Controllers\Api\V1\ContentController;
 use App\Http\Controllers\Api\V1\HealthController;
+use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Api\V1\SettingsController;
 use App\Http\Controllers\Api\V1\WishlistController;
 use Illuminate\Support\Facades\Route;
@@ -198,6 +201,134 @@ Route::prefix('cart')
          * carries this API's error envelope.
          */
         Route::post('/merge', [CartController::class, 'merge'])->name('merge');
+    });
+
+/*
+|--------------------------------------------------------------------------
+| Checkout
+|--------------------------------------------------------------------------
+|
+| Open to guests and signed-in customers alike, like the cart and for the same
+| reason: guest checkout is a first-class path, not a degraded one. There is no
+| `auth:sanctum` here — the checkout *session token* is the authorization
+| boundary, and CheckoutService re-checks on every step that a claimed session
+| is not one belonging to an account other than the caller.
+|
+| The step sequence is enforced server-side. A request that jumps to `place`
+| without having chosen a shipping method is refused with the step it must
+| complete first — see App\Enums\CheckoutStep. Skipping is not a state the
+| system can enter rather than one it detects afterwards.
+|
+| No endpoint here accepts a price, a shipping cost, or a total. Every figure
+| is recomputed from the catalog and the chosen method's own row.
+|
+*/
+
+Route::prefix('checkout')
+    ->name('checkout.')
+    ->middleware('throttle:cart')
+    ->group(function (): void {
+
+        /*
+         * Declared before /{token} so the literal segment is not captured as a
+         * session token. Static-before-wildcard, as elsewhere in this file.
+         */
+        Route::get('/payment-methods', [CheckoutController::class, 'paymentMethods'])
+            ->name('payment-methods');
+
+        /*
+         * Starting a checkout needs the cart, so this route — and only this one
+         * — carries the `cart` middleware. The steps that follow identify
+         * themselves by session token and reach the cart through it.
+         */
+        Route::post('/', [CheckoutController::class, 'start'])
+            ->middleware('cart')
+            ->name('start');
+
+        /*
+         * The token is 64 hex characters from a CSPRNG. Constraining the
+         * segment means a malformed value is a 404 at the router rather than a
+         * lookup against an indexed column.
+         */
+        Route::prefix('{token}')
+            ->where(['token' => '[a-f0-9]{64}'])
+            ->group(function (): void {
+                Route::get('/', [CheckoutController::class, 'show'])->name('show');
+                Route::delete('/', [CheckoutController::class, 'abandon'])->name('abandon');
+
+                // Steps 1–5. PUT rather than POST: each is setting the value of
+                // a named step, and re-sending it must overwrite rather than
+                // accumulate.
+                Route::put('/customer', [CheckoutController::class, 'setCustomer'])
+                    ->name('customer');
+                Route::put('/shipping-address', [CheckoutController::class, 'setShippingAddress'])
+                    ->name('shipping-address');
+                Route::put('/billing-address', [CheckoutController::class, 'setBillingAddress'])
+                    ->name('billing-address');
+
+                Route::get('/shipping-methods', [CheckoutController::class, 'shippingMethods'])
+                    ->name('shipping-methods');
+                Route::put('/shipping-method', [CheckoutController::class, 'setShippingMethod'])
+                    ->name('shipping-method');
+
+                Route::put('/payment-method', [CheckoutController::class, 'setPaymentMethod'])
+                    ->name('payment-method');
+
+                // Step 6. POST, not GET: it records that the shopper saw the
+                // total and reserves stock, both of which are writes.
+                Route::post('/review', [CheckoutController::class, 'review'])->name('review');
+
+                /*
+                 * Step 7 — the only endpoint that creates an order.
+                 *
+                 * Rate limited more tightly than the rest of checkout: this is
+                 * the expensive, transactional, stock-mutating call, and it is
+                 * the one worth protecting from a retry storm.
+                 */
+                Route::post('/place', [CheckoutController::class, 'place'])
+                    ->middleware('throttle:checkout-place')
+                    ->name('place');
+            });
+    });
+
+/*
+|--------------------------------------------------------------------------
+| Customer Orders
+|--------------------------------------------------------------------------
+|
+| Two ways in, one authorization rule.
+|
+| A signed-in customer reads their orders through `auth:sanctum`; the policy
+| confirms each order's `user_id` matches. A guest has no account, so their
+| order is reached by order number *plus* the email it was placed with — which
+| is why order numbers carry a random component rather than being sequential.
+|
+| /lookup therefore sits outside the auth group, and is throttled like a
+| credential endpoint because that is what it is.
+|
+*/
+
+Route::prefix('orders')
+    ->name('orders.')
+    ->group(function (): void {
+
+        /*
+         * Guest order lookup. POST rather than GET because the email is a
+         * credential, and a credential in a query string ends up in server
+         * logs, browser history, and the Referer header of every outbound link.
+         */
+        Route::post('/lookup', [OrderController::class, 'lookup'])
+            ->middleware('throttle:auth')
+            ->name('lookup');
+
+        Route::middleware(['auth:sanctum', 'throttle:authenticated'])->group(function (): void {
+            Route::get('/', [OrderController::class, 'index'])->name('index');
+
+            Route::get('/{order}', [OrderController::class, 'show'])->name('show');
+            Route::get('/{order}/track', [OrderController::class, 'track'])->name('track');
+
+            Route::post('/{order}/cancel', [OrderController::class, 'cancel'])->name('cancel');
+        });
     });
 
 /*
@@ -651,6 +782,76 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
                 Route::delete('/{attribute}/values/{value}', [AttributeController::class, 'destroyValue'])
                     ->middleware('permission:update_products')
                     ->name('values.destroy');
+            });
+
+            /*
+             * Order administration.
+             *
+             * Permissions are split four ways because the jobs genuinely
+             * differ. A support agent reads orders and adds notes all day
+             * (`view_orders`, `update_orders`); cancelling releases stock and
+             * may owe money (`cancel_orders`); refunding moves money out of the
+             * business (`refund_orders`). Collapsing them into one
+             * `manage_orders` would give whoever answers the phone the ability
+             * to pay out.
+             */
+            Route::prefix('orders')->name('orders.')->group(function (): void {
+
+                // Declared before /{order} so the literal segment is not
+                // captured as a uuid.
+                Route::get('/statistics', [AdminOrderController::class, 'statistics'])
+                    ->middleware('permission:view_orders,view_reports')
+                    ->name('statistics');
+
+                Route::get('/', [AdminOrderController::class, 'index'])
+                    ->middleware('permission:view_orders')
+                    ->name('index');
+
+                Route::get('/{order}', [AdminOrderController::class, 'show'])
+                    ->middleware('permission:view_orders')
+                    ->name('show');
+
+                Route::patch('/{order}/status', [AdminOrderController::class, 'updateStatus'])
+                    ->middleware('permission:update_orders')
+                    ->name('status');
+
+                Route::post('/{order}/notes', [AdminOrderController::class, 'storeNote'])
+                    ->middleware('permission:update_orders')
+                    ->name('notes.store');
+
+                /*
+                 * Recording an offline payment — a bank transfer that cleared.
+                 * `update_orders` rather than a payments permission: this
+                 * records a fact about fulfilment, it does not move money.
+                 */
+                Route::post('/{order}/payment', [AdminOrderController::class, 'markPaid'])
+                    ->middleware('permission:update_orders')
+                    ->name('payment');
+
+                Route::post('/{order}/cancel', [AdminOrderController::class, 'cancel'])
+                    ->middleware('permission:cancel_orders')
+                    ->name('cancel');
+
+                Route::post('/{order}/refund', [AdminOrderController::class, 'refund'])
+                    ->middleware('permission:refund_orders')
+                    ->name('refund');
+
+                /*
+                 * Documents. Reading, not writing, so `view_orders` is enough —
+                 * a warehouse account that can see an order can print the slip
+                 * it needs to pack it.
+                 *
+                 * Both serve HTML by default and PDF with `?format=pdf`; the
+                 * two are renderings of one Blade view, so a printed copy and a
+                 * downloaded one cannot diverge.
+                 */
+                Route::get('/{order}/invoice', [AdminOrderController::class, 'invoice'])
+                    ->middleware('permission:view_orders')
+                    ->name('invoice');
+
+                Route::get('/{order}/packing-slip', [AdminOrderController::class, 'packingSlip'])
+                    ->middleware('permission:view_orders')
+                    ->name('packing-slip');
             });
 
             /*
