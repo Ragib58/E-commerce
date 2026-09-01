@@ -22,6 +22,7 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\ShippingMethod;
 use App\Models\User;
+use App\Payments\PaymentGatewayManager;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -547,6 +548,17 @@ final class OrderService
             'status' => Payment::STATUS_PENDING,
             'amount' => (int) $order->grand_total,
             'currency' => $order->currency,
+
+            /*
+             * Which processor will handle this attempt, resolved once and
+             * stored.
+             *
+             * Recorded here rather than derived later because the mapping is
+             * configuration and configuration changes: a store that switches
+             * its card processor next year must still be able to verify and
+             * refund this payment against the processor that actually took it.
+             */
+            'gateway' => app(PaymentService::class)->gatewayForMethod($method->value),
         ]);
 
         if ($method->confirmsImmediately()) {
@@ -967,9 +979,22 @@ final class OrderService
             ]);
         }
 
-        if ($method->requiresGateway()) {
+        /*
+         * Re-checked at placement, not only when the method was chosen.
+         *
+         * A processor's credentials can be removed, or its `enabled` flag
+         * turned off, between step five and the final click. Placing an order
+         * against a gateway that can no longer take money would leave a
+         * customer holding an unpayable order.
+         *
+         * Asked of the gateway itself rather than a hardcoded list — which is
+         * what lets a new processor be added without touching this file.
+         */
+        $gatewayId = app(PaymentService::class)->gatewayForMethod($method->value);
+
+        if (! app(PaymentGatewayManager::class)->gateway($gatewayId)->isAvailable()) {
             throw ValidationException::withMessages([
-                'payment_method' => ['Online payment is not available yet. Choose cash on delivery or bank transfer.'],
+                'payment_method' => ['That payment method is not available right now. Please choose another.'],
             ]);
         }
 

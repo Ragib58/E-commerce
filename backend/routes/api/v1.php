@@ -24,7 +24,9 @@ use App\Http\Controllers\Api\V1\CatalogController;
 use App\Http\Controllers\Api\V1\CheckoutController;
 use App\Http\Controllers\Api\V1\ContentController;
 use App\Http\Controllers\Api\V1\HealthController;
+use App\Http\Controllers\Api\V1\Admin\PaymentController as AdminPaymentController;
 use App\Http\Controllers\Api\V1\OrderController;
+use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\SettingsController;
 use App\Http\Controllers\Api\V1\WishlistController;
 use Illuminate\Support\Facades\Route;
@@ -328,7 +330,92 @@ Route::prefix('orders')
             Route::get('/{order}/track', [OrderController::class, 'track'])->name('track');
 
             Route::post('/{order}/cancel', [OrderController::class, 'cancel'])->name('cancel');
+
+            /*
+             * Step 3 — start a payment for an order.
+             *
+             * Returns where to send the customer rather than issuing the
+             * redirect itself: the storefront is a separate origin and needs
+             * to choose how to navigate, and a 302 from an API endpoint would
+             * take that decision away.
+             */
+            Route::post('/{order}/pay', [PaymentController::class, 'pay'])->name('pay');
         });
+    });
+
+/*
+|--------------------------------------------------------------------------
+| Payments
+|--------------------------------------------------------------------------
+|
+| Three surfaces with three different threat models.
+|
+| `/payments/methods` is a public read of which gateways this store can
+| currently process through.
+|
+| Callbacks are where a gateway sends the customer's BROWSER back to. They
+| carry no bearer token and cannot: the request arrives as a third-party
+| redirect. The payment uuid in the path identifies which transaction is being
+| reported and does nothing else — nothing in the handler trusts the request's
+| contents, and the status is established by a server-to-server call to the
+| gateway regardless of what the query string claims.
+|
+| Webhooks are server-to-server posts authenticated by SIGNATURE inside the
+| gateway implementation. They are deliberately NOT rate limited: throttling
+| this endpoint drops legitimate notifications about money, and an unsigned
+| flood is already cheap to reject.
+|
+*/
+
+Route::prefix('payments')
+    ->name('payments.')
+    ->group(function (): void {
+
+        // Declared before the wildcard routes so the literal segment is not
+        // captured as a gateway identifier.
+        Route::get('/methods', [PaymentController::class, 'methods'])
+            ->middleware('throttle:public')
+            ->name('methods');
+
+        /*
+         * The customer's return from a hosted payment page.
+         *
+         * Both verbs, because gateways differ: SSLCommerz POSTs its result
+         * while Stripe appends a query string to a GET. Neither body is
+         * trusted.
+         *
+         * `outcome` says which route the customer came back on. It decides
+         * which page they land on, not whether they paid.
+         */
+        Route::match(['get', 'post'], '/{gateway}/callback/{payment}/{outcome}', [PaymentController::class, 'callback'])
+            ->where([
+                'gateway' => '[a-z0-9_]+',
+                'payment' => '[0-9a-fA-F-]{36}',
+                'outcome' => 'success|failure|cancel',
+            ])
+            ->name('callback');
+
+        /*
+         * Gateway webhooks.
+         *
+         * No throttle: see the block comment above. No CSRF either — these
+         * routes are in the `api` group, which is stateless by design.
+         */
+        Route::post('/{gateway}/webhook', [PaymentController::class, 'webhook'])
+            ->where('gateway', '[a-z0-9_]+')
+            ->name('webhook');
+
+        /*
+         * What the storefront polls while an async payment settles.
+         *
+         * Reports the stored status rather than calling the gateway: a
+         * customer refreshing a page must not be able to generate outbound
+         * requests to a rate-limited processor.
+         */
+        Route::get('/{payment}/status', [PaymentController::class, 'status'])
+            ->where('payment', '[0-9a-fA-F-]{36}')
+            ->middleware('throttle:public')
+            ->name('status');
     });
 
 /*
@@ -852,6 +939,54 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
                 Route::get('/{order}/packing-slip', [AdminOrderController::class, 'packingSlip'])
                     ->middleware('permission:view_orders')
                     ->name('packing-slip');
+            });
+
+            /*
+             * Payment administration.
+             *
+             * Reads need `view_payments`; the two actions that reach a
+             * processor need `manage_payments`. The split matters — reading
+             * transactions is what a support agent does all day, while
+             * re-verifying makes an outbound API call, and an accounts clerk
+             * browsing a list should not be able to generate traffic against a
+             * rate-limited gateway.
+             *
+             * Note what is absent: any endpoint that marks a payment paid. An
+             * admin can ask the gateway to re-verify; they cannot assert an
+             * outcome. That would be the one hole in the "never without
+             * verification" rule, and it would get used, because it is the
+             * fastest way to close a support ticket.
+             */
+            Route::prefix('payments')->name('payments.')->group(function (): void {
+
+                // Literal segments before the wildcard, so they are not
+                // captured as a payment uuid.
+                Route::get('/statistics', [AdminPaymentController::class, 'statistics'])
+                    ->middleware('permission:view_payments,view_reports')
+                    ->name('statistics');
+
+                Route::get('/events/unverified', [AdminPaymentController::class, 'unverifiedEvents'])
+                    ->middleware('permission:view_payments')
+                    ->name('events.unverified');
+
+                Route::get('/', [AdminPaymentController::class, 'index'])
+                    ->middleware('permission:view_payments')
+                    ->name('index');
+
+                Route::get('/{payment}', [AdminPaymentController::class, 'show'])
+                    ->where('payment', '[0-9a-fA-F-]{36}')
+                    ->middleware('permission:view_payments')
+                    ->name('show');
+
+                Route::get('/{payment}/events', [AdminPaymentController::class, 'events'])
+                    ->where('payment', '[0-9a-fA-F-]{36}')
+                    ->middleware('permission:view_payments')
+                    ->name('events');
+
+                Route::post('/{payment}/verify', [AdminPaymentController::class, 'verify'])
+                    ->where('payment', '[0-9a-fA-F-]{36}')
+                    ->middleware('permission:manage_payments')
+                    ->name('verify');
             });
 
             /*

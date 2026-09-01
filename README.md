@@ -4,12 +4,53 @@ A production-ready, fully dynamic e-commerce platform. Laravel 12 API + Blade
 admin panel, Next.js 16 storefront, MySQL, Redis, and S3-compatible storage —
 all containerised.
 
-**Phases 1–7 complete:** foundation; authentication and role-based access
+**Phases 1–8 complete:** foundation; authentication and role-based access
 control; dynamic store settings, branding, and theme management; product
 catalog and inventory; the dynamic homepage builder and CMS; the customer
-storefront and cart; checkout and order management. Payment gateway
-integration is a later phase — offline methods are fully functional, and
-gateway-backed ones are refused explicitly rather than silently pending.
+storefront and cart; checkout and order management; a modular payment gateway
+architecture with cash on delivery, SSLCommerz, bKash, and Stripe.
+
+## Payments
+
+Four gateways behind one interface, and a rule that shapes everything else:
+**a payment is marked successful only by a server-to-server call to the
+processor.**
+
+A customer returning from a hosted payment page arrives with a query string
+that travelled through their own machine — editable, guessable, and often
+sitting in browser history. So the callback handler uses it for exactly one
+thing: working out *which* transaction is being reported. It then asks the
+gateway directly, using credentials the customer does not have.
+
+That is structural rather than a discipline. `PaymentService::settle()` is the
+only method that may mark money as received, and it accepts only a
+`PaymentVerification` — an object producible solely by a gateway's `verify()`.
+There is deliberately no method anywhere that takes a status from a request.
+
+**Adding a gateway is a class plus one config line.** `config/payment.php` is
+the only place the application names an implementation; `OrderService`,
+`PaymentService`, `CheckoutService`, and the controllers contain no reference to
+Stripe or bKash at all. The test suite proves it by defining a gateway inside a
+test file, registering it at runtime, and driving a payment to a settled order.
+
+Duplicate delivery is treated as ordinary rather than exceptional — gateways
+retry for days, customers refresh the return page. Three defences: a unique
+index on the webhook events table (a check-then-act in PHP cannot close it, as
+two concurrent retries would both find nothing), a short-circuit on
+already-settled payments, and a row lock because a callback and a webhook for
+the same payment routinely arrive milliseconds apart.
+
+Webhooks are signature-verified *and then re-verified by transaction lookup*.
+That is not redundant: the signature proves origin, the lookup proves the
+amount — and for several processors the signed envelope does not cover the
+amount at all.
+
+Credentials live in environment variables and nowhere else. Every remote gateway
+defaults to disabled, and `isAvailable()` checks that credentials are actually
+present rather than that a flag is set — so a half-configured gateway is absent
+from checkout instead of failing when a customer tries to pay.
+
+See [docs/payments.md](docs/payments.md).
 
 ## Checkout and orders
 
@@ -227,7 +268,7 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 │       ├── lib/            api client, env validation, theme, query client
 │       └── components/     ui/, layout/, providers/
 ├── docker/           nginx/ php/ mysql/ redis/
-└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · orders.md · setup.md
+└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · orders.md · payments.md · setup.md
 ```
 
 ## Endpoints
@@ -242,14 +283,16 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 | — | `/api/v1/cart/*` | Cart, for guests and customers alike |
 | — | `/api/v1/checkout/*` | The seven steps, guest and registered |
 | — | `/api/v1/orders/*` | Own orders, tracking, cancellation, guest lookup |
+| — | `/api/v1/payments/*` | Initiate, gateway callbacks, webhooks, status |
 | — | `/api/v1/admin/orders/*` | Search, status, notes, refunds, invoices, packing slips |
+| — | `/api/v1/admin/payments/*` | Transactions, filters, statistics, re-verification |
 | — | `/api/v1/admin/admins/*` | Staff management, roles, permissions |
 | — | `/api/v1/admin/settings/*` | Read, bulk-update, media upload, cache flush |
 | — | `/admin/settings` | *(Blade)* Settings management panel |
 | POST | `/api/revalidate` | *(Next.js)* Cache purge webhook |
 
 See [docs/api.md](docs/api.md), [docs/orders.md](docs/orders.md),
-[docs/settings.md](docs/settings.md), and
+[docs/payments.md](docs/payments.md), [docs/settings.md](docs/settings.md), and
 [docs/authentication.md](docs/authentication.md).
 
 ## Access control

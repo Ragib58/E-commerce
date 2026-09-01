@@ -11,6 +11,9 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Payment;
 use App\Models\Refund;
+use App\Payments\Data\RefundResult;
+use App\Payments\Exceptions\PaymentException;
+use App\Payments\PaymentGatewayManager;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -46,6 +49,7 @@ final class RefundService
     public function __construct(
         private readonly InventoryService $inventory,
         private readonly OrderService $orders,
+        private readonly PaymentGatewayManager $gateways,
     ) {}
 
     /**
@@ -99,24 +103,90 @@ final class RefundService
 
                 $this->assertAmount($locked, $resolvedAmount);
 
+                /*
+                 * The idempotency check has to happen HERE, before the gateway
+                 * is called.
+                 *
+                 * The unique index on `refunds.idempotency_key` catches a
+                 * duplicate — but only at INSERT, which is after the reversal
+                 * has already been sent. A double-clicked refund button would
+                 * therefore pay the customer twice at the processor and then
+                 * quietly return the first refund row, hiding the second
+                 * payout entirely.
+                 *
+                 * The read runs inside the transaction with the order row
+                 * already locked, so a concurrent duplicate blocks on that lock
+                 * until the first has committed and then sees it. The unique
+                 * index remains as the backstop for the case this read cannot
+                 * cover — two requests that somehow reach the insert together.
+                 */
+                if ($idempotencyKey !== null) {
+                    $existing = Refund::query()
+                        ->where('idempotency_key', $idempotencyKey)
+                        ->first();
+
+                    if ($existing !== null) {
+                        return $existing;
+                    }
+                }
+
+                $payment = $this->originalPayment($locked);
+
+                /*
+                 * Reverse at the processor FIRST, then record.
+                 *
+                 * The order matters. Writing the refund row before the gateway
+                 * has agreed would mean a refused reversal still incremented
+                 * `refunded_total` — the store's books would show money
+                 * returned that the customer never received, and the balance
+                 * available for a later, legitimate refund would be wrong.
+                 *
+                 * Doing it inside the transaction means a gateway failure rolls
+                 * the whole thing back and leaves no trace of a refund that did
+                 * not happen.
+                 */
+                $result = $this->reverseAtGateway($payment, $resolvedAmount, $reason);
+
+                if ($result !== null && $result->isFailed()) {
+                    throw ValidationException::withMessages([
+                        'refund' => [$result->failureReason ?? 'The payment provider refused the refund.'],
+                    ]);
+                }
+
                 $refund = Refund::query()->create([
                     'order_id' => $locked->getKey(),
-                    'payment_id' => $this->originalPayment($locked)?->getKey(),
+                    'payment_id' => $payment?->getKey(),
                     'amount' => $resolvedAmount,
                     'currency' => $locked->currency,
+
                     /*
-                     * Completed immediately because every method reaching this
-                     * code is offline — a cash or bank refund is done by a
-                     * human and recorded here. A gateway-backed refund would
-                     * be created Pending and completed by the callback.
+                     * A gateway that settles asynchronously leaves this Pending.
+                     * Reporting a queued reversal as completed tells a customer
+                     * their money is back while the processor has only accepted
+                     * the instruction — and produces a support call two days
+                     * later.
+                     *
+                     * An offline refund is Completed because, from the
+                     * application's side, it is: the cash changed hands in the
+                     * physical world and this is the record of it.
                      */
-                    'status' => Refund::STATUS_COMPLETED,
+                    'status' => $result !== null && $result->isPending()
+                        ? Refund::STATUS_PENDING
+                        : Refund::STATUS_COMPLETED,
+
                     'admin_id' => $actor?->getKey(),
                     'actor_label' => $actor?->name ?? 'System',
                     'reason' => $reason,
                     'line_items' => $resolvedLines,
                     'is_restocked' => $restock,
                     'idempotency_key' => $idempotencyKey,
+
+                    // What the processor called this reversal, for
+                    // reconciliation against its own statements.
+                    'gateway' => $payment?->gateway,
+                    'transaction_reference' => $result?->reference,
+                    'gateway_response' => $result?->raw,
+
                     'refunded_at' => Carbon::now(),
                 ]);
 
@@ -372,6 +442,42 @@ final class RefundService
      * exactly one; an order that failed twice before succeeding should reverse
      * the attempt that actually took the money.
      */
+    /**
+     * Ask the processor to return the money, when it is able to.
+     *
+     * Returns null when there is nothing to reverse remotely — an offline
+     * gateway, or a payment that never captured. That is not a failure: a cash
+     * refund is a person handing money back, and the application's job is only
+     * to record that it happened.
+     *
+     * `supportsRefunds()` is consulted rather than the gateway being called
+     * speculatively, because asking a processor to reverse a transaction it
+     * never had would fail — and failing would block a refund that has already
+     * physically occurred.
+     *
+     * @throws PaymentException when the gateway is unreachable.
+     */
+    private function reverseAtGateway(?Payment $payment, int $amount, ?string $reason): ?RefundResult
+    {
+        if ($payment === null || ! $payment->isRefundable()) {
+            return null;
+        }
+
+        $identifier = $payment->gateway;
+
+        if (! is_string($identifier) || $identifier === '' || ! $this->gateways->has($identifier)) {
+            return null;
+        }
+
+        $gateway = $this->gateways->gateway($identifier);
+
+        if (! $gateway->supportsRefunds()) {
+            return null;
+        }
+
+        return $gateway->refund($payment, $amount, $reason);
+    }
+
     private function originalPayment(Order $order): ?Payment
     {
         return $order->payments()->successful()->latest('id')->first()

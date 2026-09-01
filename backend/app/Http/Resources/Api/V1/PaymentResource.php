@@ -49,9 +49,37 @@ final class PaymentResource extends JsonResource
 
             'failure_reason' => $this->failure_reason,
 
+            /*
+             * How many times settlement has been attempted for this payment.
+             *
+             * Duplicate callbacks and webhook retries are ordinary, so a count
+             * above one is not itself a problem — but an unusual number is the
+             * first visible sign of a gateway stuck in a retry loop, and
+             * surfacing it here saves inferring it from log volume.
+             */
+            'attempt_count' => (int) $this->attempt_count,
+
+            /*
+             * When a *server-side verification* last ran — not when a callback
+             * last arrived. A callback is an untrusted browser navigation;
+             * this is the last time the gateway itself was asked, which is the
+             * only timestamp that means anything in a dispute.
+             */
+            'verified_at' => $this->verified_at?->toIso8601String(),
+
+            'initiated_at' => $this->initiated_at?->toIso8601String(),
             'paid_at' => $this->paid_at?->toIso8601String(),
             'failed_at' => $this->failed_at?->toIso8601String(),
+            'cancelled_at' => $this->cancelled_at?->toIso8601String(),
             'created_at' => $this->created_at?->toIso8601String(),
+
+            'order' => $this->whenLoaded('order', fn (): ?array => $this->order === null ? null : [
+                'id' => $this->order->uuid,
+                'order_number' => $this->order->order_number,
+                'status' => $this->order->status->value,
+                'payment_status' => $this->order->payment_status->value,
+                'customer_email' => $this->order->customer_email,
+            ]),
         ];
     }
 }

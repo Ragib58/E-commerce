@@ -6,6 +6,7 @@ namespace App\Providers;
 
 use App\Services\BannerService;
 use App\Services\BrandService;
+use App\Payments\PaymentGatewayManager;
 use App\Services\CartService;
 use App\Services\CatalogService;
 use App\Services\CategoryService;
@@ -15,6 +16,7 @@ use App\Services\HomepageService;
 use App\Services\HtmlSanitiser;
 use App\Services\InventoryService;
 use App\Services\MediaService;
+use App\Services\PaymentService;
 use App\Services\ProductService;
 use App\Services\SettingsService;
 use App\Services\VariantService;
@@ -74,6 +76,23 @@ final class DomainServiceProvider extends ServiceProvider implements DeferrableP
          */
         $this->app->singleton(CartService::class);
         $this->app->singleton(WishlistService::class);
+
+        /*
+         * The payment layer.
+         *
+         * PaymentGatewayManager is a singleton because it memoises the gateway
+         * instances it builds. BkashGateway caches a grant token, and resolving
+         * a fresh manager per injection point would rebuild those and repeat
+         * the lookup within a single request.
+         *
+         * Gateways themselves are deliberately NOT registered here. They are
+         * resolved through the manager from `config/payment.gateways`, which is
+         * what keeps the registry as data — a container binding per gateway
+         * would have to be re-registered whenever that data changed, and would
+         * put every gateway's class name back into the core.
+         */
+        $this->app->singleton(PaymentGatewayManager::class);
+        $this->app->singleton(PaymentService::class);
     }
 
     /**
@@ -97,6 +116,8 @@ final class DomainServiceProvider extends ServiceProvider implements DeferrableP
             HomepageService::class,
             CartService::class,
             WishlistService::class,
+            PaymentGatewayManager::class,
+            PaymentService::class,
         ];
     }
 }

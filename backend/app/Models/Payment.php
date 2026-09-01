@@ -50,6 +50,24 @@ class Payment extends Model
 
     public const STATUS_FAILED = 'failed';
 
+    /**
+     * The customer abandoned the payment at the gateway.
+     *
+     * Distinct from failed. A decline is the processor saying no; a
+     * cancellation is the shopper changing their mind, and a store that chases
+     * the two the same way will nag people who simply decided not to buy.
+     */
+    public const STATUS_CANCELLED = 'cancelled';
+
+    /**
+     * The customer has been sent to the gateway but has not returned.
+     *
+     * The state an abandoned checkout leaves behind, and the one the
+     * reconciliation sweep polls: money may in fact have moved without anyone
+     * telling us, which is exactly what a server-side verification finds.
+     */
+    public const STATUS_PROCESSING = 'processing';
+
     protected $fillable = [
         'uuid',
         'order_id',
@@ -64,8 +82,13 @@ class Payment extends Model
         'gateway_response',
         'failure_reason',
         'idempotency_key',
+        'initiated_at',
         'paid_at',
+        'verified_at',
         'failed_at',
+        'cancelled_at',
+        'attempt_count',
+        'redirect_url',
     ];
 
     /**
@@ -77,8 +100,12 @@ class Payment extends Model
             'method' => PaymentMethod::class,
             'amount' => 'integer',
             'gateway_response' => 'array',
+            'attempt_count' => 'integer',
+            'initiated_at' => 'datetime',
             'paid_at' => 'datetime',
+            'verified_at' => 'datetime',
             'failed_at' => 'datetime',
+            'cancelled_at' => 'datetime',
         ];
     }
 
@@ -107,6 +134,50 @@ class Payment extends Model
         return $this->status === self::STATUS_FAILED;
     }
 
+    public function isCancelled(): bool
+    {
+        return $this->status === self::STATUS_CANCELLED;
+    }
+
+    /**
+     * Whether this attempt has reached an outcome it will not leave on its own.
+     *
+     * A paid payment is not settled *forever* — a refund can follow — but it is
+     * settled as far as this attempt is concerned, which is what the callback
+     * and webhook paths need to know before deciding whether to act again.
+     */
+    public function isSettled(): bool
+    {
+        return in_array($this->status, [
+            self::STATUS_PAID,
+            self::STATUS_FAILED,
+            self::STATUS_CANCELLED,
+        ], strict: true);
+    }
+
+    /**
+     * Whether the customer was sent to a gateway and never came back.
+     *
+     * Read by the reconciliation sweep. The window matters: a payment started
+     * ten seconds ago is a shopper still typing their card number, not an
+     * abandonment, and polling it would ask the gateway about a transaction
+     * that has not finished happening.
+     */
+    public function isAwaitingReturn(int $olderThanMinutes = 5): bool
+    {
+        return $this->status === self::STATUS_PROCESSING
+            && $this->initiated_at !== null
+            && $this->initiated_at->lessThan(now()->subMinutes($olderThanMinutes));
+    }
+
+    /**
+     * Whether this payment moved money that could be given back.
+     */
+    public function isRefundable(): bool
+    {
+        return $this->isPaid();
+    }
+
     /**
      * A receipt line: "Visa ending 4242".
      *
@@ -129,6 +200,45 @@ class Payment extends Model
     public function scopeSuccessful(Builder $query): Builder
     {
         return $query->where('status', self::STATUS_PAID);
+    }
+
+    /**
+     * @param  Builder<Payment>  $query
+     * @return Builder<Payment>
+     */
+    public function scopeForGateway(Builder $query, string $gateway): Builder
+    {
+        return $query->where('gateway', $gateway);
+    }
+
+    /**
+     * Find a payment from a gateway's own reference.
+     *
+     * The lookup every callback and webhook performs. Scoped to the gateway as
+     * well as the reference, because two processors can legitimately issue the
+     * same string — matching on the reference alone could return another
+     * gateway's payment and settle the wrong order.
+     *
+     * @param  Builder<Payment>  $query
+     * @return Builder<Payment>
+     */
+    public function scopeByReference(Builder $query, string $gateway, string $reference): Builder
+    {
+        return $query->where('gateway', $gateway)->where('transaction_reference', $reference);
+    }
+
+    /**
+     * Payments started but never resolved, older than the given window.
+     *
+     * @param  Builder<Payment>  $query
+     * @return Builder<Payment>
+     */
+    public function scopeAwaitingReconciliation(Builder $query, int $olderThanMinutes = 15): Builder
+    {
+        return $query
+            ->where('status', self::STATUS_PROCESSING)
+            ->whereNotNull('initiated_at')
+            ->where('initiated_at', '<', now()->subMinutes($olderThanMinutes));
     }
 
     public function getRouteKeyName(): string

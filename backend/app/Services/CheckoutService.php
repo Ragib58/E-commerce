@@ -11,6 +11,7 @@ use App\Models\CheckoutSession;
 use App\Models\Order;
 use App\Models\ShippingMethod;
 use App\Models\User;
+use App\Payments\PaymentGatewayManager;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -72,6 +73,7 @@ final class CheckoutService
         private readonly StockReservationService $reservations,
         private readonly OrderService $orders,
         private readonly SettingsService $settings,
+        private readonly PaymentGatewayManager $gateways,
     ) {}
 
     /*
@@ -383,17 +385,23 @@ final class CheckoutService
         }
 
         /*
-         * Refused here rather than at placement, and refused loudly.
+         * The method must map to a gateway that is actually configured.
          *
-         * No gateway is wired up in this phase. Accepting the choice and
-         * marking the order Pending would look identical to a working
-         * integration right up until a shopper asks why they were never
-         * charged — so the method that cannot yet take money says so at the
-         * moment it is chosen.
+         * Checked here rather than only at placement, and refused loudly. A
+         * method whose credentials are absent would otherwise be accepted at
+         * step five and fail at step seven — after the shopper has reviewed
+         * their order, which is the most expensive moment to discover a
+         * configuration error.
+         *
+         * The check asks the gateway itself rather than consulting a hardcoded
+         * list, so switching a processor on is a credential in the environment
+         * and nothing else.
          */
-        if ($resolved->requiresGateway()) {
+        $gateway = $this->gatewayFor($resolved);
+
+        if ($gateway === null || ! $gateway->isAvailable()) {
             throw ValidationException::withMessages([
-                'payment_method' => ['Online payment is not available yet. Choose cash on delivery or bank transfer.'],
+                'payment_method' => ['That payment method is not available right now. Please choose another.'],
             ]);
         }
 
@@ -606,17 +614,53 @@ final class CheckoutService
     public function availablePaymentMethods(): array
     {
         return array_map(
-            fn (PaymentMethod $method): array => [
-                'value' => $method->value,
-                'label' => $method->label(),
-                'description' => $method->description(),
-                'is_available' => ! $method->requiresGateway(),
-                'unavailable_reason' => $method->requiresGateway()
-                    ? 'Online payment is not available yet.'
-                    : null,
-            ],
+            function (PaymentMethod $method): array {
+                $gateway = $this->gatewayFor($method);
+                $isAvailable = $gateway !== null && $gateway->isAvailable();
+
+                return [
+                    'value' => $method->value,
+                    'label' => $method->label(),
+                    'description' => $method->description(),
+                    'is_available' => $isAvailable,
+
+                    /*
+                     * Named rather than hidden when unavailable. A shopper who
+                     * expects to pay by card should be told it is temporarily
+                     * off, not left wondering whether the page failed to load.
+                     *
+                     * The reason is deliberately vague: "not configured" would
+                     * tell an attacker which processors this store uses and
+                     * which of them are currently misconfigured.
+                     */
+                    'unavailable_reason' => $isAvailable
+                        ? null
+                        : 'This payment method is temporarily unavailable.',
+
+                    'gateway' => $gateway?->identifier(),
+                ];
+            },
             PaymentMethod::enabledFor($this->settings),
         );
+    }
+
+    /**
+     * The gateway that processes a given checkout method.
+     *
+     * Returns null when the mapping names a gateway that is not registered —
+     * a misconfiguration, and one that must render the method unavailable
+     * rather than throwing. A single bad config value should remove one
+     * payment option, not break the checkout page for everyone.
+     */
+    private function gatewayFor(PaymentMethod $method): ?\App\Payments\Contracts\PaymentGatewayInterface
+    {
+        $identifier = app(\App\Services\PaymentService::class)->gatewayForMethod($method->value);
+
+        if (! $this->gateways->has($identifier)) {
+            return null;
+        }
+
+        return $this->gateways->gateway($identifier);
     }
 
     /*
