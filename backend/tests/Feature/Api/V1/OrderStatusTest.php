@@ -507,7 +507,12 @@ final class OrderStatusTest extends TestCase
         $order = Order::factory()->status(OrderStatus::Packed)->create();
         $admin = Admin::factory()->create();
 
-        $updated = $this->orders()->setTracking($order, 'TRACK-12345', 'https://carrier.test/TRACK-12345', $admin);
+        $updated = $this->orders()->setTracking(
+            $order,
+            'TRACK-12345',
+            'https://carrier.test/TRACK-12345',
+            actor: $admin,
+        );
 
         $this->assertSame('TRACK-12345', $updated->tracking_number);
 

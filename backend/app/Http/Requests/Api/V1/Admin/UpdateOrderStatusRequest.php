@@ -53,10 +53,14 @@ final class UpdateOrderStatusRequest extends FormRequest
             'restock' => ['sometimes', 'boolean'],
 
             /*
-             * Tracking details, accepted alongside a move to Shipped so the
-             * warehouse records both in one action rather than shipping first
-             * and then remembering the number.
+             * Courier and tracking details, accepted alongside a move to
+             * Shipped so the warehouse records all three in one action rather
+             * than shipping first and then remembering the details. Free text
+             * rather than a foreign key — see the courier migration for why a
+             * courier is a fact printed on the parcel, not a reference to a
+             * row that might later be renamed.
              */
+            'courier_name' => ['nullable', 'string', 'max:128'],
             'tracking_number' => ['nullable', 'string', 'max:128'],
             'tracking_url' => ['nullable', 'url', 'max:512'],
         ];

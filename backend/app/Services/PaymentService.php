@@ -5,11 +5,16 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Enums\PaymentStatus;
+use App\Enums\PermissionType;
 use App\Models\Admin;
 use App\Models\CheckoutSession;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\PaymentWebhookEvent;
+use App\Notifications\AdminFailedPaymentNotification;
+use App\Notifications\AdminPaymentReceivedNotification;
+use App\Notifications\PaymentFailedNotification;
+use App\Notifications\PaymentSuccessfulNotification;
 use App\Payments\Contracts\PaymentGatewayInterface;
 use App\Payments\Data\PaymentIntent;
 use App\Payments\Data\PaymentVerification;
@@ -21,6 +26,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 
 /**
  * Orchestrates the payment lifecycle.
@@ -370,6 +376,28 @@ final class PaymentService
      */
     public function settle(Payment $payment, PaymentVerification $verification): Payment
     {
+        $before = $payment->fresh()?->status ?? $payment->status;
+
+        $settled = $this->settleWithinTransaction($payment, $verification);
+
+        /*
+         * Notified only after the transaction above has committed, and only on
+         * a genuine transition — a duplicate delivery re-entering this method
+         * for an already-settled payment must not send a second "payment
+         * received" email. The same rule InventoryService and OrderService
+         * follow for their own events: a listener that emails a customer must
+         * never fire for a change that could still roll back, or for a change
+         * that did not actually happen this time.
+         */
+        if ($before !== $settled->status) {
+            $this->announceSettlement($settled);
+        }
+
+        return $settled;
+    }
+
+    private function settleWithinTransaction(Payment $payment, PaymentVerification $verification): Payment
+    {
         return DB::transaction(function () use ($payment, $verification): Payment {
             /*
              * Re-read under a row lock.
@@ -421,6 +449,77 @@ final class PaymentService
 
             return $locked->refresh();
         });
+    }
+
+    /**
+     * Send the customer and admin notifications a settlement implies.
+     *
+     * Called only after {@see settleWithinTransaction()}'s transaction has
+     * committed, and only when the payment's status genuinely changed — see
+     * the caller. `loadMissing` guards the order relation for the same reason
+     * every notification class documents: a queued job's model has no
+     * relations pre-loaded, and strict mode would throw on an unloaded
+     * belongsTo otherwise.
+     */
+    private function announceSettlement(Payment $payment): void
+    {
+        $payment->loadMissing('order');
+        $order = $payment->order;
+
+        if ($order === null) {
+            return;
+        }
+
+        if ($payment->status === Payment::STATUS_PAID) {
+            $this->notifyCustomer($order, new PaymentSuccessfulNotification($order, $payment));
+
+            foreach ($this->adminsToNotify(PermissionType::ViewPayments) as $admin) {
+                $admin->notify(new AdminPaymentReceivedNotification($order, $payment));
+            }
+
+            return;
+        }
+
+        if ($payment->status === Payment::STATUS_FAILED) {
+            $this->notifyCustomer($order, new PaymentFailedNotification($order, $payment));
+
+            foreach ($this->adminsToNotify(PermissionType::ViewPayments) as $admin) {
+                $admin->notify(new AdminFailedPaymentNotification($order, $payment));
+            }
+        }
+    }
+
+    /**
+     * Send to the customer's account when one exists, or to their email
+     * directly for a guest order. Mirrors SendOrderNotifications::notifyCustomer
+     * — kept as a second small copy rather than a shared dependency, since
+     * pulling a listener class into a service for one helper method would
+     * invert which of the two owns the relationship.
+     */
+    private function notifyCustomer(Order $order, object $notification): void
+    {
+        $order->loadMissing('user');
+
+        if ($order->user_id !== null && $order->user !== null) {
+            $order->user->notify($notification);
+
+            return;
+        }
+
+        Notification::route('mail', $order->customer_email)->notify($notification);
+    }
+
+    /**
+     * @return array<int, Admin>
+     */
+    private function adminsToNotify(PermissionType $permission): array
+    {
+        return Admin::query()
+            ->active()
+            ->get()
+            ->filter(fn (Admin $admin): bool => $admin->hasPermission($permission))
+            ->values()
+            ->all();
     }
 
     /**

@@ -33,8 +33,7 @@ final class CartController extends Controller
 
     public function __construct(
         private readonly CartService $carts,
-    ) {
-    }
+    ) {}
 
     /**
      * GET /cart
@@ -55,7 +54,7 @@ final class CartController extends Controller
         }
 
         return $this->successResponse(
-            data: $this->carts->summarise($cart),
+            data: $this->carts->summarise($cart, $request->user()),
             message: 'Cart retrieved successfully.',
         );
     }
@@ -76,7 +75,7 @@ final class CartController extends Controller
         );
 
         return $this->successResponse(
-            data: $this->carts->summarise($cart),
+            data: $this->carts->summarise($cart, $request->user()),
             message: 'Added to your cart.',
             status: 201,
         );
@@ -97,7 +96,7 @@ final class CartController extends Controller
         $this->carts->updateQuantity($cart, $item, $quantity);
 
         return $this->successResponse(
-            data: $this->carts->summarise($cart->refresh()),
+            data: $this->carts->summarise($cart->refresh(), $request->user()),
             message: $quantity <= 0 ? 'Item removed from your cart.' : 'Cart updated.',
         );
     }
@@ -112,7 +111,7 @@ final class CartController extends Controller
         $this->carts->remove($cart, $item);
 
         return $this->successResponse(
-            data: $this->carts->summarise($cart->refresh()),
+            data: $this->carts->summarise($cart->refresh(), $request->user()),
             message: 'Item removed from your cart.',
         );
     }
@@ -127,7 +126,7 @@ final class CartController extends Controller
         $this->carts->clear($cart);
 
         return $this->successResponse(
-            data: $this->carts->summarise($cart->refresh()),
+            data: $this->carts->summarise($cart->refresh(), $request->user()),
             message: 'Your cart has been emptied.',
         );
     }
@@ -135,23 +134,35 @@ final class CartController extends Controller
     /**
      * POST /cart/coupon
      *
-     * Stores the code. No discount is computed — see CartService::applyCoupon
-     * for why a zero-discount "applied" response would be worse than an honest
-     * "not yet validated".
+     * Applies or clears a coupon code. Validated immediately against
+     * CouponService so the shopper sees whether it worked without waiting for
+     * checkout — but see CartService::applyCoupon for why this validation is
+     * advisory and the coupon is checked again, from scratch, at redemption.
+     *
+     * A guest's email is required to check first-order and per-user rules, and
+     * is taken from the request body rather than inferred, since a guest has no
+     * account for the server to already know an address for.
      */
     public function applyCoupon(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'coupon_code' => ['nullable', 'string', 'max:64'],
+            'email' => ['nullable', 'email:rfc', 'max:191'],
         ]);
 
         $cart = $this->requireCart($request);
+        $user = $request->user();
 
-        $this->carts->applyCoupon($cart, $validated['coupon_code'] ?? null);
+        $this->carts->applyCoupon(
+            cart: $cart,
+            code: $validated['coupon_code'] ?? null,
+            user: $user,
+            email: $validated['email'] ?? $user?->email,
+        );
 
         return $this->successResponse(
-            data: $this->carts->summarise($cart->refresh()),
-            message: 'Coupon codes are validated at checkout.',
+            data: $this->carts->summarise($cart->refresh(), $user, $validated['email'] ?? $user?->email),
+            message: ($validated['coupon_code'] ?? null) !== null ? 'Coupon applied.' : 'Coupon removed.',
         );
     }
 
@@ -179,7 +190,7 @@ final class CartController extends Controller
         $cart = $this->carts->mergeGuestCart($user, $request->header(ResolveCart::HEADER));
 
         return $this->successResponse(
-            data: $this->carts->summarise($cart),
+            data: $this->carts->summarise($cart, $request->user()),
             message: 'Your cart has been restored.',
         );
     }
@@ -237,6 +248,7 @@ final class CartController extends Controller
                 'code' => null,
                 'applied' => false,
                 'discount' => 0,
+                'free_shipping' => false,
                 'message' => null,
             ],
             'has_issues' => false,

@@ -10,7 +10,9 @@ use App\Models\Cart;
 use App\Models\CheckoutSession;
 use App\Models\Order;
 use App\Models\ShippingMethod;
+use App\Models\ShippingZone;
 use App\Models\User;
+use App\Payments\Contracts\PaymentGatewayInterface;
 use App\Payments\PaymentGatewayManager;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -74,6 +76,7 @@ final class CheckoutService
         private readonly OrderService $orders,
         private readonly SettingsService $settings,
         private readonly PaymentGatewayManager $gateways,
+        private readonly ShippingZoneService $shippingZones,
     ) {}
 
     /*
@@ -347,12 +350,16 @@ final class CheckoutService
         $cart = $session->cart()->firstOrFail();
         $summary = $this->carts->summarise($cart);
         $subtotal = (int) $summary['totals']['subtotal'];
+        $zone = $this->resolveZoneFromSession($session);
 
-        // Availability re-checked against this order's actual subtotal and
-        // destination, not merely against `is_active`. A method the shopper
-        // could not have been offered must not become selectable by posting its
-        // id directly.
-        if (! $method->isAvailableFor($subtotal, $session->get('shipping_address.country'))) {
+        /*
+         * Availability re-checked against this order's actual subtotal,
+         * destination, and resolved zone — not merely against `is_active`. A
+         * method the shopper could not have been offered must not become
+         * selectable by posting its id directly.
+         */
+        if (! $method->isAvailableFor($subtotal, $session->get('shipping_address.country'))
+            || ! $this->shippingZones->isAvailableInZone($method, $subtotal, $zone)) {
             throw ValidationException::withMessages([
                 'shipping_method' => ['That delivery method is not available for your order.'],
             ]);
@@ -508,10 +515,25 @@ final class CheckoutService
     public function summarise(CheckoutSession $session): array
     {
         $cart = $session->cart()->firstOrFail();
-        $summary = $this->carts->summarise($cart);
+        $user = $session->user_id !== null ? User::query()->find($session->user_id) : null;
+        $email = (string) ($session->get('customer.email') ?? $user?->email ?? '');
+
+        // Coupon-aware: a stored code's discount is folded in here exactly as
+        // it will be at placement, so the review step and the order agree.
+        $summary = $this->carts->summarise($cart, $user, $email);
 
         $shippingMethod = $this->currentShippingMethod($session);
-        $totals = $this->orders->calculateTotals($summary, $shippingMethod);
+        $zone = $this->resolveZoneFromSession($session);
+        $totals = $this->orders->calculateTotals($summary, $shippingMethod, $zone);
+
+        $couponDiscount = (int) ($summary['coupon']['discount'] ?? 0);
+        $totals['discount'] = $couponDiscount;
+        $totals['total'] = max(0, $totals['total'] - $couponDiscount);
+
+        if (($summary['coupon']['free_shipping'] ?? false) === true) {
+            $totals['total'] = max(0, $totals['total'] - $totals['shipping']);
+            $totals['shipping'] = 0;
+        }
 
         $shipping = $session->get('shipping_address');
         $billing = $session->get('billing_address');
@@ -536,9 +558,9 @@ final class CheckoutService
                 'id' => $shippingMethod->uuid,
                 'name' => $shippingMethod->name,
                 'description' => $shippingMethod->description,
-                // The rate for *this* subtotal, so a free-shipping threshold
-                // shows as free rather than as its list price.
-                'rate' => $shippingMethod->rateFor((int) $summary['totals']['subtotal']),
+                // Already the zone-priced figure — see $totals['shipping']
+                // above, computed by the same ShippingZoneService::quote call.
+                'rate' => $totals['shipping'],
                 'estimate' => $shippingMethod->estimateLabel(),
             ],
 
@@ -576,25 +598,32 @@ final class CheckoutService
         $cart = $session->cart()->firstOrFail();
         $subtotal = (int) $this->carts->summarise($cart)['totals']['subtotal'];
         $country = $session->get('shipping_address.country');
+        $zone = $this->resolveZoneFromSession($session);
 
         return ShippingMethod::query()
             ->active()
             ->ordered()
             ->get()
-            ->filter(fn (ShippingMethod $method): bool => $method->isAvailableFor($subtotal, $country))
-            ->map(function (ShippingMethod $method) use ($subtotal): array {
-                $estimate = $method->estimatedDelivery();
+            ->filter(fn (ShippingMethod $method): bool => $method->isAvailableFor($subtotal, $country)
+                && $this->shippingZones->isAvailableInZone($method, $subtotal, $zone))
+            ->map(function (ShippingMethod $method) use ($subtotal, $zone): array {
+                $quote = $this->shippingZones->quote($method, $subtotal, $zone);
 
                 return [
                     'id' => $method->uuid,
                     'name' => $method->name,
                     'description' => $method->description,
-                    'rate' => $method->rateFor($subtotal),
+                    'rate' => $quote['amount'],
                     'list_rate' => (int) $method->rate,
-                    'is_free' => $method->rateFor($subtotal) === 0,
+                    'is_free' => $quote['amount'] === 0,
+                    'zone' => $zone?->name,
                     'estimate' => $method->estimateLabel(),
-                    'estimated_from' => $estimate['from']?->toDateString(),
-                    'estimated_to' => $estimate['to']?->toDateString(),
+                    'estimated_from' => $quote['min_days'] !== null
+                        ? now()->addWeekdays($quote['min_days'])->toDateString()
+                        : null,
+                    'estimated_to' => $quote['max_days'] !== null
+                        ? now()->addWeekdays($quote['max_days'])->toDateString()
+                        : null,
                     'requires_address' => (bool) $method->requires_address,
                 ];
             })
@@ -652,9 +681,9 @@ final class CheckoutService
      * rather than throwing. A single bad config value should remove one
      * payment option, not break the checkout page for everyone.
      */
-    private function gatewayFor(PaymentMethod $method): ?\App\Payments\Contracts\PaymentGatewayInterface
+    private function gatewayFor(PaymentMethod $method): ?PaymentGatewayInterface
     {
-        $identifier = app(\App\Services\PaymentService::class)->gatewayForMethod($method->value);
+        $identifier = app(PaymentService::class)->gatewayForMethod($method->value);
 
         if (! $this->gateways->has($identifier)) {
             return null;
@@ -718,6 +747,31 @@ final class CheckoutService
         $id = $session->get('shipping_method_id');
 
         return $id !== null ? ShippingMethod::query()->find($id) : null;
+    }
+
+    /**
+     * The zone the session's stored shipping address resolves to, or null when
+     * no address has been entered yet.
+     *
+     * Resolved fresh on every call rather than cached on the session, because
+     * an address is editable at any point before placement and a stale zone
+     * would silently mis-price shipping after the shopper corrects a typo in
+     * their city.
+     */
+    private function resolveZoneFromSession(CheckoutSession $session): ?ShippingZone
+    {
+        $address = $session->get('shipping_address');
+
+        if (! is_array($address)) {
+            return null;
+        }
+
+        return $this->shippingZones->resolveZone(
+            country: $address['country'] ?? null,
+            state: $address['state'] ?? null,
+            city: $address['city'] ?? null,
+            postcode: $address['postal_code'] ?? null,
+        );
     }
 
     /**

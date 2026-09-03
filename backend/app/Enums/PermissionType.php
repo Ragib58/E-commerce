@@ -42,6 +42,14 @@ enum PermissionType: string
     case ViewPayments = 'view_payments';
     case ManagePayments = 'manage_payments';
 
+    // Shipping — methods, zones, rates
+    case ViewShipping = 'view_shipping';
+    case ManageShipping = 'manage_shipping';
+
+    // Coupons
+    case ViewCoupons = 'view_coupons';
+    case ManageCoupons = 'manage_coupons';
+
     // Customers
     case ViewUsers = 'view_users';
     case ManageUsers = 'manage_users';
@@ -83,6 +91,10 @@ enum PermissionType: string
             self::RefundOrders => 'Refund orders',
             self::ViewPayments => 'View payments',
             self::ManagePayments => 'Manage payments',
+            self::ViewShipping => 'View shipping settings',
+            self::ManageShipping => 'Manage shipping methods and zones',
+            self::ViewCoupons => 'View coupons',
+            self::ManageCoupons => 'Manage coupons',
             self::ViewUsers => 'View customers',
             self::ManageUsers => 'Manage customers',
             self::ViewAdmins => 'View administrators',
@@ -112,6 +124,10 @@ enum PermissionType: string
             self::ViewOrders, self::UpdateOrders, self::CancelOrders, self::RefundOrders => 'Orders',
 
             self::ViewPayments, self::ManagePayments => 'Payments',
+
+            self::ViewShipping, self::ManageShipping => 'Shipping',
+
+            self::ViewCoupons, self::ManageCoupons => 'Coupons',
 
             self::ViewUsers, self::ManageUsers => 'Customers',
 

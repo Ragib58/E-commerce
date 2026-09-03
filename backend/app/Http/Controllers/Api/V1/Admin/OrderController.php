@@ -159,11 +159,12 @@ final class OrderController extends Controller
          * the move to Shipped can already see the number. Doing it afterwards
          * would email "your order has shipped" with nothing to track.
          */
-        if ($request->filled('tracking_number')) {
+        if ($request->filled('tracking_number') || $request->filled('courier_name')) {
             $this->orders->setTracking(
                 order: $order,
-                trackingNumber: $request->string('tracking_number')->toString(),
+                trackingNumber: $request->input('tracking_number'),
                 trackingUrl: $request->input('tracking_url'),
+                courierName: $request->input('courier_name'),
                 actor: $request->user('admin-api'),
             );
         }

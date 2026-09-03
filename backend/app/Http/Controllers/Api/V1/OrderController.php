@@ -175,8 +175,10 @@ final class OrderController extends Controller
                 ],
 
                 'tracking' => [
+                    'courier' => $order->courier_name,
                     'number' => $order->tracking_number,
                     'url' => $order->tracking_url,
+                    'dispatched_at' => $order->dispatched_at?->toIso8601String(),
                 ],
 
                 'shipping_method' => $order->shipping_method_name,

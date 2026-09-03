@@ -58,6 +58,9 @@ use Illuminate\Support\Str;
  * @property PaymentMethod $payment_method
  * @property int|null $shipping_method_id
  * @property string|null $shipping_method_name
+ * @property string|null $courier_name
+ * @property int|null $shipping_zone_id
+ * @property string|null $shipping_zone_name
  * @property int $subtotal
  * @property int $discount_total
  * @property int $tax_total
@@ -75,6 +78,7 @@ use Illuminate\Support\Str;
  * @property Carbon|null $placed_at
  * @property Carbon|null $confirmed_at
  * @property Carbon|null $shipped_at
+ * @property Carbon|null $dispatched_at
  * @property Carbon|null $delivered_at
  * @property Carbon|null $cancelled_at
  * @property Carbon|null $refunded_at
@@ -109,6 +113,9 @@ class Order extends Model
         'payment_method',
         'shipping_method_id',
         'shipping_method_name',
+        'courier_name',
+        'shipping_zone_id',
+        'shipping_zone_name',
         'currency',
         'tax_rate',
         'coupon_code',
@@ -140,6 +147,7 @@ class Order extends Model
             'placed_at' => 'datetime',
             'confirmed_at' => 'datetime',
             'shipped_at' => 'datetime',
+            'dispatched_at' => 'datetime',
             'delivered_at' => 'datetime',
             'cancelled_at' => 'datetime',
             'refunded_at' => 'datetime',
@@ -267,6 +275,21 @@ class Order extends Model
     public function shippingMethod(): BelongsTo
     {
         return $this->belongsTo(ShippingMethod::class);
+    }
+
+    /**
+     * The zone the delivery address resolved to at placement.
+     *
+     * A live reference for reporting ("orders shipped to zone X"); the
+     * snapshot columns `shipping_zone_name` and `shipping_total` are what
+     * govern display and money, so a zone rename or deletion never rewrites
+     * what this order actually cost to ship.
+     *
+     * @return BelongsTo<ShippingZone, $this>
+     */
+    public function shippingZone(): BelongsTo
+    {
+        return $this->belongsTo(ShippingZone::class);
     }
 
     /**

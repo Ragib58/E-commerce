@@ -92,6 +92,21 @@ class ShippingMethod extends Model
     }
 
     /**
+     * Zone-specific overrides for this method's price.
+     *
+     * A method with no rows here has no zoned pricing at all — every quote
+     * falls back to {@see rateFor()}, which is exactly the pre-zones behaviour.
+     * Adding a rate row is therefore additive, never a migration of existing
+     * checkout behaviour.
+     *
+     * @return HasMany<ShippingRate, $this>
+     */
+    public function rates(): HasMany
+    {
+        return $this->hasMany(ShippingRate::class);
+    }
+
+    /**
      * What this method costs for a given order subtotal.
      *
      * The one place a shipping charge is decided. Checkout, order placement,

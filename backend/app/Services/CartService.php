@@ -66,8 +66,8 @@ final class CartService
 
     public function __construct(
         private readonly SettingsService $settings,
-    ) {
-    }
+        private readonly CouponService $coupons,
+    ) {}
 
     /*
     |--------------------------------------------------------------------------
@@ -107,19 +107,25 @@ final class CartService
             }
         }
 
-        return $create ? $this->createFor(null) : null;
+        return $create ? $this->createFor(null, $token) : null;
     }
 
     /**
      * Create an empty cart for a user or a guest.
+     *
+     * A guest-supplied token is honoured when present rather than always
+     * minted fresh: `ResolveCart` has already validated its shape, and a
+     * client that generated its own token before its first mutating request
+     * (rather than waiting for one to be echoed back) must still land on the
+     * cart it expects, not a second one under a different id.
      */
-    private function createFor(?User $user): Cart
+    private function createFor(?User $user, ?string $token = null): Cart
     {
         return Cart::query()->create([
             'user_id' => $user?->getKey(),
             // Guests need a credential; a user's cart is found by id and does
             // not get one, so a token can never resolve to an account's cart.
-            'token' => $user === null ? $this->generateToken() : null,
+            'token' => $user === null ? ($token ?: $this->generateToken()) : null,
             'last_activity_at' => now(),
         ]);
     }
@@ -369,18 +375,23 @@ final class CartService
     }
 
     /**
-     * Store a coupon code against the cart.
+     * Store a coupon code against the cart, after confirming it would apply.
      *
-     * **Placeholder.** The code is persisted so a shopper who enters one before
-     * the promotions phase ships does not lose it, but no discount is computed
-     * and {@see summarise()} reports `coupon.applied = false` with an explicit
-     * reason. Returning a zero discount instead would render as "coupon
-     * applied, £0.00 off", which reads as a broken promotion rather than an
-     * unbuilt feature.
+     * Validated here for the shopper's immediate feedback — a code rejected at
+     * step 5 of checkout after they saw it "applied" on the cart page reads as
+     * broken. But this validation is advisory, not authoritative: the coupon is
+     * re-validated and its discount recomputed from scratch at redemption,
+     * because a code entered here can outlive its usage limit, its expiry, or
+     * even the coupon's existence by the time an order is actually placed.
+     *
+     * The email is required to check first-order and per-user rules against a
+     * guest, who has no account to check them against otherwise. It is not
+     * persisted — only the code is — so this method never becomes a place a
+     * cart silently accumulates personal data.
      *
      * @throws ValidationException
      */
-    public function applyCoupon(Cart $cart, ?string $code): Cart
+    public function applyCoupon(Cart $cart, ?string $code, ?User $user = null, ?string $email = null): Cart
     {
         $code = $code !== null ? trim($code) : null;
 
@@ -392,6 +403,16 @@ final class CartService
             throw ValidationException::withMessages([
                 'coupon_code' => ['That does not look like a valid coupon code.'],
             ]);
+        }
+
+        if ($code !== null) {
+            $this->coupons->preview(
+                code: $code,
+                cart: $cart,
+                cartSummary: $this->summariseWithoutCoupon($cart),
+                user: $user,
+                customerEmail: $email ?? $user?->email ?? '',
+            );
         }
 
         $cart->forceFill(['coupon_code' => $code !== null ? strtoupper($code) : null])->save();
@@ -406,19 +427,37 @@ final class CartService
     */
 
     /**
-     * The cart as the storefront should display it, priced from the catalog.
+     * The cart as the storefront should display it, priced from the catalog
+     * and — when a coupon code is stored — with that discount applied.
      *
-     * Every number in the returned structure is computed here. Nothing is read
-     * from a stored total, and nothing originates in a request.
-     *
-     * Lines that can no longer be sold are still returned, flagged with an
-     * `issues` array, rather than being silently dropped. A shopper whose item
-     * vanished between page loads with no explanation assumes the site lost it;
-     * a line that says "out of stock" is information they can act on.
+     * A coupon that no longer validates (expired, exhausted, deactivated since
+     * it was entered) is reported the same way an out-of-stock line is:
+     * `coupon.applied = false` with a reason, rather than silently dropped or
+     * silently honoured. `$user` and `$email` identify the customer for
+     * user-restricted and first-order rules; both may be null for an anonymous
+     * read, in which case a customer-scoped coupon simply will not validate.
      *
      * @return array<string, mixed>
      */
-    public function summarise(Cart $cart): array
+    public function summarise(Cart $cart, ?User $user = null, ?string $email = null): array
+    {
+        $summary = $this->summariseWithoutCoupon($cart);
+
+        return $this->applyCouponToSummary($summary, $cart, $user, $email);
+    }
+
+    /**
+     * The priced cart before any coupon is considered.
+     *
+     * Split out from {@see summarise()} because CouponService needs exactly
+     * this shape — subtotal and lines, with no coupon math layered on — to
+     * validate a code someone is *in the middle of applying*. Calling the
+     * public `summarise()` from inside coupon validation would recompute a
+     * coupon discount while still deciding whether that discount is valid.
+     *
+     * @return array<string, mixed>
+     */
+    public function summariseWithoutCoupon(Cart $cart): array
     {
         /*
          * Loaded into `items`, not into `itemsForPricing`.
@@ -486,16 +525,69 @@ final class CartService
 
             'coupon' => [
                 'code' => $cart->coupon_code,
-                // Explicitly false, with a reason. See applyCoupon().
                 'applied' => false,
                 'discount' => 0,
-                'message' => $cart->coupon_code !== null
-                    ? 'Coupon codes are validated at checkout. No discount has been applied yet.'
-                    : null,
+                'free_shipping' => false,
+                'message' => null,
             ],
 
             'has_issues' => collect($lines)->contains(fn (array $line): bool => $line['issues'] !== []),
         ];
+    }
+
+    /**
+     * Layer a stored coupon's discount onto an already-priced summary.
+     *
+     * The coupon's discount is subtracted from `totals.total` but NOT from
+     * `totals.subtotal` — subtotal is a catalog fact (the sum of line prices)
+     * and must stay one, independent of what promotion happens to be attached.
+     * A receipt that folds the coupon into the subtotal cannot separately show
+     * "subtotal: X, coupon: −Y, total: X−Y", which is the breakdown every
+     * shopper expects at checkout.
+     *
+     * @param  array<string, mixed>  $summary
+     * @return array<string, mixed>
+     */
+    private function applyCouponToSummary(array $summary, Cart $cart, ?User $user, ?string $email): array
+    {
+        if ($cart->coupon_code === null) {
+            return $summary;
+        }
+
+        try {
+            $preview = $this->coupons->preview(
+                code: $cart->coupon_code,
+                cart: $cart,
+                cartSummary: $summary,
+                user: $user,
+                customerEmail: $email ?? $user?->email ?? '',
+            );
+        } catch (ValidationException $exception) {
+            $summary['coupon'] = [
+                'code' => $cart->coupon_code,
+                'applied' => false,
+                'discount' => 0,
+                'message' => $exception->validator->errors()->first('coupon_code'),
+            ];
+
+            return $summary;
+        }
+
+        $discount = $preview['discount'];
+        $shippingWaived = $preview['shipping_waived'];
+
+        $summary['coupon'] = [
+            'code' => $preview['coupon']->code,
+            'applied' => true,
+            'discount' => $discount,
+            'free_shipping' => $shippingWaived,
+            'message' => null,
+        ];
+
+        $summary['totals']['coupon_discount'] = $discount;
+        $summary['totals']['total'] = max(0, $summary['totals']['total'] - $discount);
+
+        return $summary;
     }
 
     /**
@@ -855,7 +947,7 @@ final class CartService
 
     private function lineKey(int $productId, ?int $variantId): string
     {
-        return $productId . ':' . ($variantId ?? 0);
+        return $productId.':'.($variantId ?? 0);
     }
 
     /**

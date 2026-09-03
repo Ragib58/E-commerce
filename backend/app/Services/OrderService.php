@@ -21,6 +21,7 @@ use App\Models\Payment;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\ShippingMethod;
+use App\Models\ShippingZone;
 use App\Models\User;
 use App\Payments\PaymentGatewayManager;
 use Illuminate\Database\QueryException;
@@ -73,6 +74,8 @@ final class OrderService
         private readonly StockReservationService $reservations,
         private readonly SettingsService $settings,
         private readonly OrderNumberGenerator $numbers,
+        private readonly CouponService $coupons,
+        private readonly ShippingZoneService $shippingZones,
     ) {}
 
     /*
@@ -199,12 +202,40 @@ final class OrderService
 
                     $this->assertCartIsOrderable($summary);
 
-                    $totals = $this->calculateTotals($summary, $shippingMethod);
-
                     $customer = $session->get('customer', []);
                     $user = $session->user_id !== null
                         ? User::query()->find($session->user_id)
                         : null;
+
+                    $zone = $this->resolveOrderZone($session);
+
+                    $totals = $this->calculateTotals($summary, $shippingMethod, $zone);
+
+                    /*
+                     * Redeemed before the order is inserted, so its discount is
+                     * known at insert time rather than patched in afterwards.
+                     * Re-validated from scratch here — see
+                     * CouponService::redeemPending — because the coupon may
+                     * have expired or exhausted its limit in the time since the
+                     * shopper applied it to the cart. On a retry below (the
+                     * order number collided), this whole transaction rolls
+                     * back and re-runs, so the usage counter it incremented is
+                     * rolled back with it and re-incremented exactly once for
+                     * whichever attempt actually commits.
+                     */
+                    $coupon = $cart->coupon_code !== null
+                        ? $this->coupons->redeemPending($cart->coupon_code, $summary, $user, (string) ($customer['email'] ?? $user?->email ?? ''))
+                        : null;
+
+                    if ($coupon !== null) {
+                        $totals['discount'] += $coupon['discount'];
+                        $totals['total'] = max(0, $totals['total'] - $coupon['discount']);
+
+                        if ($coupon['shipping_waived']) {
+                            $totals['total'] = max(0, $totals['total'] - $totals['shipping']);
+                            $totals['shipping'] = 0;
+                        }
+                    }
 
                     $order = $this->insertOrder(
                         session: $session,
@@ -213,11 +244,22 @@ final class OrderService
                         customer: $customer,
                         paymentMethod: $paymentMethod,
                         shippingMethod: $shippingMethod,
+                        shippingZone: $zone,
                         totals: $totals,
                         idempotencyKey: $idempotencyKey,
                         ipAddress: $ipAddress,
                         userAgent: $userAgent,
                     );
+
+                    if ($coupon !== null && $cart->coupon_code !== null) {
+                        $this->coupons->recordRedemption(
+                            code: $cart->coupon_code,
+                            order: $order,
+                            discount: $coupon['discount'],
+                            user: $user,
+                            customerEmail: $order->customer_email,
+                        );
+                    }
 
                     $this->writeLines($order, $summary);
                     $this->writeAddresses($order, $session);
@@ -312,6 +354,7 @@ final class OrderService
         array $customer,
         PaymentMethod $paymentMethod,
         ?ShippingMethod $shippingMethod,
+        ?ShippingZone $shippingZone,
         array $totals,
         ?string $idempotencyKey,
         ?string $ipAddress,
@@ -329,6 +372,11 @@ final class OrderService
             // Snapshotted, so renaming the method later does not rewrite this
             // order's record of what was chosen.
             'shipping_method_name' => $shippingMethod?->name,
+            // Snapshotted for the same reason: a zone renamed or deleted later
+            // must not rewrite what this order's delivery address resolved to
+            // at the moment it was placed.
+            'shipping_zone_id' => $shippingZone?->getKey(),
+            'shipping_zone_name' => $shippingZone?->name,
             'currency' => (string) $this->settings->get('business.currency', 'USD'),
             'tax_rate' => (float) $this->settings->get('business.tax_rate', 0),
             'coupon_code' => $cart->coupon_code,
@@ -582,25 +630,38 @@ final class OrderService
      * @param  array<string, mixed>  $summary
      * @return array{subtotal: int, discount: int, tax: int, shipping: int, total: int}
      */
-    public function calculateTotals(array $summary, ?ShippingMethod $shippingMethod): array
+    public function calculateTotals(array $summary, ?ShippingMethod $shippingMethod, ?ShippingZone $zone = null): array
     {
         $subtotal = (int) $summary['totals']['subtotal'];
-        $discount = (int) $summary['totals']['discount'];
         $tax = (int) $summary['totals']['tax'];
 
-        // Read from the method's own row, never from the client. The free-above
-        // threshold is applied by the model so the quote and the order cannot
-        // disagree about whether shipping was free.
-        $shipping = $shippingMethod?->rateFor($subtotal) ?? 0;
+        /*
+         * Priced through ShippingZoneService rather than the method's own
+         * `rateFor()` directly, so checkout's quote and the order it produces
+         * are computed by literally the same call — a zone resolved one way at
+         * review and another way at placement is exactly the discrepancy that
+         * reads to a customer as being overcharged.
+         */
+        $shipping = $shippingMethod !== null
+            ? $this->shippingZones->quote($shippingMethod, $subtotal, $zone)['amount']
+            : 0;
 
         return [
             'subtotal' => $subtotal,
-            'discount' => $discount,
+            /*
+             * `discount` here is an ORDER-LEVEL discount — a coupon — not the
+             * catalog's per-line markdown. The line discount ($summary['totals']
+             * ['discount']) is already netted into `subtotal` via each line's
+             * effective price, so folding it in here too would subtract it
+             * twice against Order::totalsReconcile(). It starts at zero and the
+             * caller adds a coupon's discount on top, which is the only thing
+             * this column is for.
+             */
+            'discount' => 0,
             'tax' => $tax,
             'shipping' => $shipping,
-            // The identity Order::totalsReconcile() asserts. `discount` is
-            // already reflected in the line totals that make up `subtotal`, so
-            // it is reported for display rather than subtracted twice.
+            // The identity Order::totalsReconcile() asserts:
+            // subtotal - discount + tax + shipping = total.
             'total' => $subtotal + $tax + $shipping,
         ];
     }
@@ -931,17 +992,28 @@ final class OrderService
         Order $order,
         ?string $trackingNumber,
         ?string $trackingUrl = null,
+        ?string $courierName = null,
         ?Admin $actor = null,
     ): Order {
         $order->forceFill([
             'tracking_number' => $trackingNumber,
             'tracking_url' => $trackingUrl,
+            'courier_name' => $courierName,
+            // Recorded the moment any courier detail is set, distinct from
+            // `shipped_at` — an admin often has the tracking number before the
+            // parcel is actually collected, and conflating the two would
+            // either ship the order early or lose the number.
+            'dispatched_at' => $trackingNumber !== null || $courierName !== null
+                ? ($order->dispatched_at ?? Carbon::now())
+                : $order->dispatched_at,
         ])->save();
 
         if ($trackingNumber !== null) {
             $this->addNote(
                 $order,
-                sprintf('Tracking number set to %s.', $trackingNumber),
+                $courierName !== null
+                    ? sprintf('Shipped with %s — tracking number %s.', $courierName, $trackingNumber)
+                    : sprintf('Tracking number set to %s.', $trackingNumber),
                 $actor,
                 isCustomerVisible: true,
             );
@@ -1021,6 +1093,33 @@ final class OrderService
         }
 
         return $method;
+    }
+
+    /**
+     * The zone the session's shipping address resolves to at placement.
+     *
+     * Resolved fresh here rather than trusted from an earlier checkout step,
+     * for the same reason the shipping method and every price are re-derived
+     * inside this transaction: the address in the session is a fact the
+     * shopper entered, and the zone it maps to is derived from it every time,
+     * never cached alongside it. An operator editing zone boundaries between
+     * review and placement must change what the very next order resolves to,
+     * not what a stale cached value said minutes earlier.
+     */
+    private function resolveOrderZone(CheckoutSession $session): ?ShippingZone
+    {
+        $address = $session->get('shipping_address');
+
+        if (! is_array($address)) {
+            return null;
+        }
+
+        return $this->shippingZones->resolveZone(
+            country: $address['country'] ?? null,
+            state: $address['state'] ?? null,
+            city: $address['city'] ?? null,
+            postcode: $address['postal_code'] ?? null,
+        );
     }
 
     /**

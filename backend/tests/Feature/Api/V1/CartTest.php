@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Api\V1;
 
+use App\Enums\SettingGroup;
+use App\Enums\SettingType;
 use App\Enums\TokenAbility;
 use App\Http\Middleware\ResolveCart;
 use App\Models\Cart;
+use App\Models\Coupon;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\User;
+use App\Services\SettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
@@ -58,11 +62,11 @@ final class CartTest extends TestCase
      */
     private function setTaxRate(float $rate): void
     {
-        app(\App\Services\SettingsService::class)->set(
+        app(SettingsService::class)->set(
             'business.tax_rate',
             $rate,
-            \App\Enums\SettingType::Float,
-            \App\Enums\SettingGroup::Business,
+            SettingType::Float,
+            SettingGroup::Business,
         );
 
         $this->app->make('cache')->flush();
@@ -619,7 +623,7 @@ final class CartTest extends TestCase
     */
 
     #[Test]
-    public function a_coupon_code_is_stored_but_never_discounts(): void
+    public function an_unknown_coupon_code_is_rejected_rather_than_stored(): void
     {
         $product = Product::factory()->published()->create(['price' => 5_000, 'stock' => 5]);
         $token = $this->guestToken();
@@ -628,14 +632,40 @@ final class CartTest extends TestCase
             ->postJson('/api/v1/cart/items', ['product' => $product->slug])
             ->assertCreated();
 
+        // "SUMMER20" was never created as a real coupon, so the backend must
+        // reject it outright rather than store an unvalidated code — a zero
+        // discount reported as "applied" reads as a broken promotion rather
+        // than an honest rejection.
         $this->withHeader(ResolveCart::HEADER, $token)
             ->postJson('/api/v1/cart/coupon', ['coupon_code' => 'summer20'])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.coupon_code.0', 'That coupon code is not valid.');
+
+        $this->withHeader(ResolveCart::HEADER, $token)
+            ->getJson('/api/v1/cart')
             ->assertOk()
-            ->assertJsonPath('data.coupon.code', 'SUMMER20')
-            // Explicitly not applied. A zero discount reported as "applied"
-            // reads as a broken promotion rather than an unbuilt feature.
+            ->assertJsonPath('data.coupon.code', null)
             ->assertJsonPath('data.coupon.applied', false)
-            ->assertJsonPath('data.coupon.discount', 0)
             ->assertJsonPath('data.totals.total', 5_000);
+    }
+
+    #[Test]
+    public function a_valid_coupon_code_discounts_the_cart_total(): void
+    {
+        $product = Product::factory()->published()->create(['price' => 5_000, 'stock' => 5]);
+        $coupon = Coupon::factory()->percentage(10.0)->create(['code' => 'SAVE10']);
+        $token = $this->guestToken();
+
+        $this->withHeader(ResolveCart::HEADER, $token)
+            ->postJson('/api/v1/cart/items', ['product' => $product->slug])
+            ->assertCreated();
+
+        $this->withHeader(ResolveCart::HEADER, $token)
+            ->postJson('/api/v1/cart/coupon', ['coupon_code' => 'save10', 'email' => 'shopper@example.com'])
+            ->assertOk()
+            ->assertJsonPath('data.coupon.code', 'SAVE10')
+            ->assertJsonPath('data.coupon.applied', true)
+            ->assertJsonPath('data.coupon.discount', 500)
+            ->assertJsonPath('data.totals.total', 4_500);
     }
 }

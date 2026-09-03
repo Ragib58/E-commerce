@@ -5,26 +5,31 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\Admin\AdminAuthController;
 use App\Http\Controllers\Api\V1\Admin\AdminManagementController;
 use App\Http\Controllers\Api\V1\Admin\AttributeController;
+use App\Http\Controllers\Api\V1\Admin\BannerController;
 use App\Http\Controllers\Api\V1\Admin\BrandController;
 use App\Http\Controllers\Api\V1\Admin\CategoryController;
+use App\Http\Controllers\Api\V1\Admin\CmsPageController;
+use App\Http\Controllers\Api\V1\Admin\CouponController as AdminCouponController;
+use App\Http\Controllers\Api\V1\Admin\HomepageController;
 use App\Http\Controllers\Api\V1\Admin\InventoryController;
+use App\Http\Controllers\Api\V1\Admin\NotificationController as AdminNotificationController;
+use App\Http\Controllers\Api\V1\Admin\OrderController as AdminOrderController;
+use App\Http\Controllers\Api\V1\Admin\PaymentController as AdminPaymentController;
 use App\Http\Controllers\Api\V1\Admin\ProductController;
 use App\Http\Controllers\Api\V1\Admin\RoleController;
 use App\Http\Controllers\Api\V1\Admin\SettingsManagementController;
+use App\Http\Controllers\Api\V1\Admin\ShippingController;
 use App\Http\Controllers\Api\V1\Admin\VariantController;
 use App\Http\Controllers\Api\V1\Auth\CustomerAuthController;
 use App\Http\Controllers\Api\V1\Auth\EmailVerificationController;
 use App\Http\Controllers\Api\V1\Auth\PasswordResetController;
-use App\Http\Controllers\Api\V1\Admin\BannerController;
-use App\Http\Controllers\Api\V1\Admin\CmsPageController;
-use App\Http\Controllers\Api\V1\Admin\HomepageController;
-use App\Http\Controllers\Api\V1\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\V1\CartController;
 use App\Http\Controllers\Api\V1\CatalogController;
 use App\Http\Controllers\Api\V1\CheckoutController;
 use App\Http\Controllers\Api\V1\ContentController;
+use App\Http\Controllers\Api\V1\CouponController;
 use App\Http\Controllers\Api\V1\HealthController;
-use App\Http\Controllers\Api\V1\Admin\PaymentController as AdminPaymentController;
+use App\Http\Controllers\Api\V1\NotificationController;
 use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\SettingsController;
@@ -158,6 +163,10 @@ Route::middleware('throttle:public')->group(function (): void {
     Route::get('/pages/{slug}', [ContentController::class, 'page'])
         ->where('slug', '[a-z0-9-]+')
         ->name('pages.show');
+
+    // Current public offers. See CouponController for why applying a
+    // specific code is a cart endpoint rather than living here.
+    Route::get('/coupons', [CouponController::class, 'index'])->name('coupons.index');
 });
 
 /*
@@ -194,7 +203,11 @@ Route::prefix('cart')
             ->whereNumber('item')
             ->name('items.destroy');
 
-        // Stored, not validated — see CartService::applyCoupon.
+        /*
+         * Validated immediately against CouponService and re-validated from
+         * scratch at redemption — see CartService::applyCoupon for why both
+         * checks exist rather than trusting this one alone.
+         */
         Route::post('/coupon', [CartController::class, 'applyCoupon'])->name('coupon');
 
         /*
@@ -430,6 +443,34 @@ Route::prefix('payments')
 |
 */
 
+/*
+|--------------------------------------------------------------------------
+| Customer Notifications
+|--------------------------------------------------------------------------
+|
+| A signed-in customer's own database notifications and channel preferences.
+| Scoped entirely to $request->user() — see NotificationController's class
+| docblock for why there is no endpoint here that takes a notifiable id.
+|
+*/
+
+Route::prefix('notifications')
+    ->name('notifications.')
+    ->middleware(['auth:sanctum', 'throttle:authenticated'])
+    ->group(function (): void {
+        // Declared before the wildcard mark-read route so the literal
+        // segments are not captured as a notification id.
+        Route::get('/unread-count', [NotificationController::class, 'unreadCount'])->name('unread-count');
+        Route::post('/read-all', [NotificationController::class, 'markAllRead'])->name('read-all');
+        Route::get('/preferences', [NotificationController::class, 'preferences'])->name('preferences');
+        Route::patch('/preferences', [NotificationController::class, 'updatePreference'])->name('preferences.update');
+
+        Route::get('/', [NotificationController::class, 'index'])->name('index');
+        Route::patch('/{notification}/read', [NotificationController::class, 'markRead'])
+            ->where('notification', '[0-9a-fA-F-]{36}')
+            ->name('read');
+    });
+
 Route::prefix('wishlist')
     ->name('wishlist.')
     /*
@@ -560,6 +601,30 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
                     ->name('change-password');
             });
     });
+
+    /*
+     * An admin's own notification inbox and channel preferences.
+     *
+     * Deliberately outside the permission-gated management block below: which
+     * alerts an admin receives about their own account is not a resource that
+     * needs a specific permission to reach, the same way `/admin/auth/me`
+     * needs only a valid, active session.
+     */
+    Route::prefix('notifications')
+        ->name('notifications.')
+        ->middleware(['auth:admin-api', 'admin.active', 'throttle:authenticated'])
+        ->group(function (): void {
+            Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount'])->name('unread-count');
+            Route::post('/read-all', [AdminNotificationController::class, 'markAllRead'])->name('read-all');
+            Route::get('/preferences', [AdminNotificationController::class, 'preferences'])->name('preferences');
+            Route::patch('/preferences', [AdminNotificationController::class, 'updatePreference'])
+                ->name('preferences.update');
+
+            Route::get('/', [AdminNotificationController::class, 'index'])->name('index');
+            Route::patch('/{notification}/read', [AdminNotificationController::class, 'markRead'])
+                ->where('notification', '[0-9a-fA-F-]{36}')
+                ->name('read');
+        });
 
     /*
      * Staff-only management endpoints.
@@ -987,6 +1052,109 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
                     ->where('payment', '[0-9a-fA-F-]{36}')
                     ->middleware('permission:manage_payments')
                     ->name('verify');
+            });
+
+            /*
+             * Shipping — methods, zones, and the rates that price a method
+             * within a zone. Read paths admit `view_shipping` as well as
+             * `manage_shipping`, so a read-only role can see configuration and
+             * quote a delivery estimate without being able to change what the
+             * storefront charges.
+             */
+            Route::prefix('shipping')->name('shipping.')->group(function (): void {
+                Route::get('/quote', [ShippingController::class, 'quote'])
+                    ->middleware('permission:view_shipping,manage_shipping')
+                    ->name('quote');
+
+                Route::prefix('methods')->name('methods.')->group(function (): void {
+                    Route::get('/', [ShippingController::class, 'methods'])
+                        ->middleware('permission:view_shipping,manage_shipping')
+                        ->name('index');
+
+                    Route::post('/', [ShippingController::class, 'storeMethod'])
+                        ->middleware('permission:manage_shipping')
+                        ->name('store');
+
+                    Route::get('/{method}', [ShippingController::class, 'showMethod'])
+                        ->middleware('permission:view_shipping,manage_shipping')
+                        ->name('show');
+
+                    Route::patch('/{method}', [ShippingController::class, 'updateMethod'])
+                        ->middleware('permission:manage_shipping')
+                        ->name('update');
+
+                    Route::delete('/{method}', [ShippingController::class, 'destroyMethod'])
+                        ->middleware('permission:manage_shipping')
+                        ->name('destroy');
+
+                    // A rate belongs to a method in the URL and a zone in the
+                    // body — see StoreShippingRateRequest.
+                    Route::post('/{method}/rates', [ShippingController::class, 'storeRate'])
+                        ->middleware('permission:manage_shipping')
+                        ->name('rates.store');
+                });
+
+                Route::prefix('zones')->name('zones.')->group(function (): void {
+                    Route::get('/', [ShippingController::class, 'zones'])
+                        ->middleware('permission:view_shipping,manage_shipping')
+                        ->name('index');
+
+                    Route::post('/', [ShippingController::class, 'storeZone'])
+                        ->middleware('permission:manage_shipping')
+                        ->name('store');
+
+                    Route::get('/{zone}', [ShippingController::class, 'showZone'])
+                        ->middleware('permission:view_shipping,manage_shipping')
+                        ->name('show');
+
+                    Route::patch('/{zone}', [ShippingController::class, 'updateZone'])
+                        ->middleware('permission:manage_shipping')
+                        ->name('update');
+
+                    Route::delete('/{zone}', [ShippingController::class, 'destroyZone'])
+                        ->middleware('permission:manage_shipping')
+                        ->name('destroy');
+                });
+
+                // Addressed independently of its method, matching the pattern
+                // ProductVariant's mutation routes already use — the admin
+                // panel edits a rate from a row it already holds.
+                Route::delete('/rates/{rate}', [ShippingController::class, 'destroyRate'])
+                    ->middleware('permission:manage_shipping')
+                    ->name('rates.destroy');
+            });
+
+            /*
+             * Coupons.
+             *
+             * Read paths admit `view_coupons` as well as `manage_coupons`, so a
+             * support agent can look up why a code was rejected without being
+             * able to create or edit promotions.
+             */
+            Route::prefix('coupons')->name('coupons.')->group(function (): void {
+                Route::get('/', [AdminCouponController::class, 'index'])
+                    ->middleware('permission:view_coupons,manage_coupons')
+                    ->name('index');
+
+                Route::post('/', [AdminCouponController::class, 'store'])
+                    ->middleware('permission:manage_coupons')
+                    ->name('store');
+
+                Route::get('/{coupon}', [AdminCouponController::class, 'show'])
+                    ->middleware('permission:view_coupons,manage_coupons')
+                    ->name('show');
+
+                Route::patch('/{coupon}', [AdminCouponController::class, 'update'])
+                    ->middleware('permission:manage_coupons')
+                    ->name('update');
+
+                Route::delete('/{coupon}', [AdminCouponController::class, 'destroy'])
+                    ->middleware('permission:manage_coupons')
+                    ->name('destroy');
+
+                Route::get('/{coupon}/usages', [AdminCouponController::class, 'usages'])
+                    ->middleware('permission:view_coupons,manage_coupons')
+                    ->name('usages');
             });
 
             /*

@@ -4,11 +4,13 @@ A production-ready, fully dynamic e-commerce platform. Laravel 12 API + Blade
 admin panel, Next.js 16 storefront, MySQL, Redis, and S3-compatible storage —
 all containerised.
 
-**Phases 1–8 complete:** foundation; authentication and role-based access
+**Phases 1–9 complete:** foundation; authentication and role-based access
 control; dynamic store settings, branding, and theme management; product
 catalog and inventory; the dynamic homepage builder and CMS; the customer
 storefront and cart; checkout and order management; a modular payment gateway
-architecture with cash on delivery, SSLCommerz, bKash, and Stripe.
+architecture with cash on delivery, SSLCommerz, bKash, and Stripe; zoned
+shipping with courier tracking, a fully server-validated coupon system, and
+queued email/database notifications for both customers and staff.
 
 ## Payments
 
@@ -100,6 +102,30 @@ restocks where required, and fires its event — in a single transaction. The
 model **throws** on a status assigned any other way.
 
 See [docs/orders.md](docs/orders.md).
+
+## Shipping, coupons, and notifications
+
+Shipping zones are an optional refinement on top of flat per-method pricing:
+a method with no zone configured prices exactly as it always did, while
+`ShippingZoneService::quote()` — the one place checkout, order placement, and
+the admin preview all ask — resolves an address to the most specific matching
+zone and prices within it, falling back to the method's flat rate when no
+zone rate applies. An order snapshots which zone priced it and carries
+courier name, tracking number, and tracking URL, all set together when an
+admin marks it shipped.
+
+Coupons support percentage and fixed discounts, a maximum payout, a minimum
+order amount, product/category/user scoping, first-order-only, an activation
+window, and both total and per-user usage limits — every rule re-validated
+from scratch, under a row lock, at the moment an order is placed, never
+trusted from what a cart preview said earlier. Thirteen notification types
+(order lifecycle, payment outcomes, refunds, low stock) are queued and sent
+on mail and database channels to customers and staff alike, filtered through
+an opt-out preference model that a handful of critical types — a failed
+payment, an order confirmation — bypass entirely.
+
+See [docs/shipping.md](docs/shipping.md), [docs/coupons.md](docs/coupons.md),
+and [docs/notifications.md](docs/notifications.md).
 
 ## Storefront and cart
 
@@ -268,7 +294,7 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 │       ├── lib/            api client, env validation, theme, query client
 │       └── components/     ui/, layout/, providers/
 ├── docker/           nginx/ php/ mysql/ redis/
-└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · orders.md · payments.md · setup.md
+└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · orders.md · payments.md · shipping.md · coupons.md · notifications.md · setup.md
 ```
 
 ## Endpoints
@@ -288,11 +314,17 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 | — | `/api/v1/admin/payments/*` | Transactions, filters, statistics, re-verification |
 | — | `/api/v1/admin/admins/*` | Staff management, roles, permissions |
 | — | `/api/v1/admin/settings/*` | Read, bulk-update, media upload, cache flush |
+| — | `/api/v1/admin/shipping/*` | Methods, zones, rates, quote preview |
+| — | `/api/v1/admin/coupons/*` | Coupon CRUD and redemption ledger |
+| — | `/api/v1/coupons` , `/api/v1/cart/coupon` | Public coupon listing, cart application |
+| — | `/api/v1/notifications/*` , `/api/v1/admin/notifications/*` | Database notifications, preferences, per audience |
 | — | `/admin/settings` | *(Blade)* Settings management panel |
 | POST | `/api/revalidate` | *(Next.js)* Cache purge webhook |
 
 See [docs/api.md](docs/api.md), [docs/orders.md](docs/orders.md),
-[docs/payments.md](docs/payments.md), [docs/settings.md](docs/settings.md), and
+[docs/payments.md](docs/payments.md), [docs/settings.md](docs/settings.md),
+[docs/shipping.md](docs/shipping.md), [docs/coupons.md](docs/coupons.md),
+[docs/notifications.md](docs/notifications.md), and
 [docs/authentication.md](docs/authentication.md).
 
 ## Access control

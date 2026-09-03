@@ -11,12 +11,14 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Payment;
 use App\Models\Refund;
+use App\Notifications\RefundProcessedNotification;
 use App\Payments\Data\RefundResult;
 use App\Payments\Exceptions\PaymentException;
 use App\Payments\PaymentGatewayManager;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -256,7 +258,38 @@ final class RefundService
             throw $exception;
         }
 
-        return $refund->refresh();
+        $refund = $refund->refresh();
+
+        /*
+         * Notified only here, on the path that actually created a new refund
+         * row — never for the idempotent-replay branch above, which returns an
+         * *existing* refund a customer has already been told about. Sending a
+         * second "refund processed" email for a double-clicked button would be
+         * exactly the duplicate-notification failure the idempotency key
+         * exists to prevent in the first place.
+         */
+        $this->notifyRefund($order, $refund);
+
+        return $refund;
+    }
+
+    /**
+     * Send the customer's refund confirmation and, when the account and
+     * relations were not already loaded by the caller, load what the
+     * notification needs.
+     */
+    private function notifyRefund(Order $order, Refund $refund): void
+    {
+        $order = $order->fresh(['user']) ?? $order;
+
+        if ($order->user_id !== null && $order->user !== null) {
+            $order->user->notify(new RefundProcessedNotification($order, $refund));
+
+            return;
+        }
+
+        Notification::route('mail', $order->customer_email)
+            ->notify(new RefundProcessedNotification($order, $refund));
     }
 
     /**

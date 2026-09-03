@@ -6,11 +6,18 @@ namespace App\Providers;
 
 use App\Events\CatalogChanged;
 use App\Events\ContentChanged;
+use App\Events\CustomerRegistered;
+use App\Events\OrderPlaced;
+use App\Events\OrderStatusChanged;
 use App\Events\SettingsUpdated;
 use App\Events\StockAdjusted;
+use App\Events\StockLevelLow;
 use App\Listeners\InvalidateCatalogCache;
 use App\Listeners\InvalidateContentCache;
 use App\Listeners\InvalidateFrontendCache;
+use App\Listeners\SendLowStockNotification;
+use App\Listeners\SendOrderNotifications;
+use App\Listeners\SendWelcomeNotification;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\URL;
@@ -96,5 +103,25 @@ final class AppServiceProvider extends ServiceProvider
          * listener does not touch.
          */
         Event::listen(CatalogChanged::class, [InvalidateContentCache::class, 'handleCatalogChanged']);
+
+        /*
+         * Order lifecycle notifications — the customer's confirmation and
+         * status emails, and the admin "new order" alert. Bound to explicit
+         * methods for the same reason as the catalog listener above: one
+         * class handling two related events with different rules about which
+         * notification each implies.
+         */
+        Event::listen(OrderPlaced::class, [SendOrderNotifications::class, 'handleOrderPlaced']);
+        Event::listen(OrderStatusChanged::class, [SendOrderNotifications::class, 'handleOrderStatusChanged']);
+
+        // Payment success/failure and refund notifications are dispatched
+        // directly from PaymentService and RefundService rather than through
+        // an event — see those classes. Both already run inside the exact
+        // transaction that settles the money, which is the one place the
+        // "did this really happen" question has a definitive answer; routing
+        // through an event here would add a hop without adding safety.
+        Event::listen(StockLevelLow::class, SendLowStockNotification::class);
+
+        Event::listen(CustomerRegistered::class, SendWelcomeNotification::class);
     }
 }

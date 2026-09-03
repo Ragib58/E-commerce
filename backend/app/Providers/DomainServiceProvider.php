@@ -4,21 +4,24 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Payments\PaymentGatewayManager;
 use App\Services\BannerService;
 use App\Services\BrandService;
-use App\Payments\PaymentGatewayManager;
 use App\Services\CartService;
 use App\Services\CatalogService;
 use App\Services\CategoryService;
 use App\Services\CmsPageService;
+use App\Services\CouponService;
 use App\Services\HealthCheckService;
 use App\Services\HomepageService;
 use App\Services\HtmlSanitiser;
 use App\Services\InventoryService;
 use App\Services\MediaService;
+use App\Services\NotificationPreferenceService;
 use App\Services\PaymentService;
 use App\Services\ProductService;
 use App\Services\SettingsService;
+use App\Services\ShippingZoneService;
 use App\Services\VariantService;
 use App\Services\WishlistService;
 use Illuminate\Contracts\Support\DeferrableProvider;
@@ -93,6 +96,18 @@ final class DomainServiceProvider extends ServiceProvider implements DeferrableP
          */
         $this->app->singleton(PaymentGatewayManager::class);
         $this->app->singleton(PaymentService::class);
+
+        /*
+         * Shipping zones, coupons, and notification preferences.
+         *
+         * All three are stateless and read-heavy in the same way the services
+         * above are — a checkout page resolves a zone, prices several methods
+         * against it, and may validate a coupon in the same request, so
+         * sharing one instance avoids re-reading config and settings per call.
+         */
+        $this->app->singleton(ShippingZoneService::class);
+        $this->app->singleton(CouponService::class);
+        $this->app->singleton(NotificationPreferenceService::class);
     }
 
     /**
@@ -118,6 +133,9 @@ final class DomainServiceProvider extends ServiceProvider implements DeferrableP
             WishlistService::class,
             PaymentGatewayManager::class,
             PaymentService::class,
+            ShippingZoneService::class,
+            CouponService::class,
+            NotificationPreferenceService::class,
         ];
     }
 }

@@ -85,10 +85,13 @@ final class OrderResource extends JsonResource
             'coupon_code' => $this->coupon_code,
 
             'shipping_method' => $this->shipping_method_name,
+            'shipping_zone' => $this->shipping_zone_name,
 
             'tracking' => [
+                'courier' => $this->courier_name,
                 'number' => $this->tracking_number,
                 'url' => $this->tracking_url,
+                'dispatched_at' => $this->dispatched_at?->toIso8601String(),
             ],
 
             /*
