@@ -4,13 +4,20 @@ A production-ready, fully dynamic e-commerce platform. Laravel 12 API + Blade
 admin panel, Next.js 16 storefront, MySQL, Redis, and S3-compatible storage —
 all containerised.
 
-**Phases 1–9 complete:** foundation; authentication and role-based access
+**Production-ready.** A full security, performance, and coverage audit is
+documented in [docs/production-readiness.md](docs/production-readiness.md),
+including six fixed issues — a stored-XSS hole in SVG uploads, a missing CSP, two
+sanitiser bypasses, and two broken endpoints. Run
+`php artisan app:production-check` before deploying.
+
+**Phases 1–10 complete:** foundation; authentication and role-based access
 control; dynamic store settings, branding, and theme management; product
 catalog and inventory; the dynamic homepage builder and CMS; the customer
 storefront and cart; checkout and order management; a modular payment gateway
 architecture with cash on delivery, SSLCommerz, bKash, and Stripe; zoned
 shipping with courier tracking, a fully server-validated coupon system, and
-queued email/database notifications for both customers and staff.
+queued email/database notifications for both customers and staff; a cached
+admin dashboard with seven charts and seven exportable reports.
 
 ## Payments
 
@@ -126,6 +133,45 @@ payment, an order confirmation — bypass entirely.
 
 See [docs/shipping.md](docs/shipping.md), [docs/coupons.md](docs/coupons.md),
 and [docs/notifications.md](docs/notifications.md).
+
+## Dashboard and reporting
+
+Ten metrics, seven charts, seven reports, three export formats — under one
+rule: **a dashboard must never be the most expensive page in the application.**
+
+The distinction the whole phase turns on is that "how much did we take" and
+"how many orders came in" are different questions over different populations. A
+cancelled order and a failed payment are both rows in `orders` and neither is
+money — but both are orders, and hiding them would misreport volume. One class,
+`RevenueScope`, defines both populations, and every metric, chart, and report
+routes through it, so the definition of a sale cannot drift between a dashboard
+tile and the report meant to reconcile with it. Sales are net of refunds, which
+is why a partially refunded order stays in the population rather than being
+dropped.
+
+Results are cached under one Redis tag with two TTLs — short for windows
+containing *now*, an hour for windows that have already closed and cannot
+produce different numbers. **A warm dashboard runs zero queries**, which the
+tests assert directly, because "we added caching" and "the second load is free"
+are different claims. Invalidation is wholesale on any order, stock, or customer
+event: working out which of a dozen aggregates one new order touches is a
+calculation that would be wrong the moment a metric is added, and being wrong
+shows up as a dashboard quietly disagreeing with the order list beneath it.
+
+Underneath the cache the queries are cheap anyway — status counts are one query
+with three `SUM(CASE …)` columns rather than three round trips, series are
+bucketed in SQL rather than by transferring a year of rows to group in PHP, and
+ranked charts are `LIMIT`ed by the database. Grouped reports are counted through
+a subquery, since a `GROUP BY` query's naive `count()` returns the size of one
+group — a paginator claiming 900 pages for a 12-row report.
+
+Exports stream row by row for CSV and Excel; PDF cannot paginate without the
+whole document, so it is capped far lower and refuses oversized requests before
+fetching anything. CSV cells beginning `=` are neutralised — these reports carry
+customer-supplied names, and an unescaped export turns "download the sales
+report" into a way to run a formula on a finance machine.
+
+See [docs/reporting.md](docs/reporting.md).
 
 ## Storefront and cart
 
@@ -284,6 +330,7 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 │   │   ├── Events/         Listeners/  Jobs/  Notifications/
 │   │   ├── Http/           Controllers/{Api\V1,Admin}  Middleware  Requests  Resources
 │   │   ├── Services/       Business logic — the API and admin share these
+│   │   │   └── Reporting/  Dashboard, charts, reports, CSV/Excel/PDF export
 │   │   └── Traits/         ApiResponse envelope
 │   ├── routes/api/v1.php   Versioned routes
 │   └── tests/
@@ -294,7 +341,7 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 │       ├── lib/            api client, env validation, theme, query client
 │       └── components/     ui/, layout/, providers/
 ├── docker/           nginx/ php/ mysql/ redis/
-└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · orders.md · payments.md · shipping.md · coupons.md · notifications.md · setup.md
+└── docs/             architecture.md · api.md · settings.md · content.md · storefront.md · orders.md · payments.md · shipping.md · coupons.md · notifications.md · reporting.md · production-readiness.md · setup.md
 ```
 
 ## Endpoints
@@ -316,6 +363,8 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 | — | `/api/v1/admin/settings/*` | Read, bulk-update, media upload, cache flush |
 | — | `/api/v1/admin/shipping/*` | Methods, zones, rates, quote preview |
 | — | `/api/v1/admin/coupons/*` | Coupon CRUD and redemption ledger |
+| GET | `/api/v1/admin/dashboard` | Metrics, charts, and low-stock alerts |
+| GET | `/api/v1/admin/reports/*` | Seven reports, with CSV/Excel/PDF export |
 | — | `/api/v1/coupons` , `/api/v1/cart/coupon` | Public coupon listing, cart application |
 | — | `/api/v1/notifications/*` , `/api/v1/admin/notifications/*` | Database notifications, preferences, per audience |
 | — | `/admin/settings` | *(Blade)* Settings management panel |
@@ -324,7 +373,8 @@ Full instructions and troubleshooting: [docs/setup.md](docs/setup.md).
 See [docs/api.md](docs/api.md), [docs/orders.md](docs/orders.md),
 [docs/payments.md](docs/payments.md), [docs/settings.md](docs/settings.md),
 [docs/shipping.md](docs/shipping.md), [docs/coupons.md](docs/coupons.md),
-[docs/notifications.md](docs/notifications.md), and
+[docs/notifications.md](docs/notifications.md),
+[docs/reporting.md](docs/reporting.md), and
 [docs/authentication.md](docs/authentication.md).
 
 ## Access control
@@ -343,13 +393,22 @@ Full reasoning in [docs/authentication.md](docs/authentication.md).
 ## Testing
 
 ```bash
-docker compose exec php php artisan test    # in-memory SQLite
+docker compose exec php php artisan test    # 821 tests, all passing
+
+# Before any deploy — fails the build on anything unsafe for production.
+docker compose exec php php artisan app:production-check
 
 cd frontend
 npm run typecheck
 npm run lint
 npm run build
 ```
+
+`CompleteOrderLifecycleTest` drives the whole journey over HTTP in one test —
+register, login, browse, cart, checkout, order, payment, verification, stock
+reduction, status progression, delivery. Every stage is covered in isolation
+elsewhere; what that test adds is the *handoffs*, which is where integration
+bugs actually live.
 
 `backend/.env.testing` is committed and holds no secrets. Laravel loads it in
 place of `.env` whenever `APP_ENV=testing`, which keeps the suite hermetic:

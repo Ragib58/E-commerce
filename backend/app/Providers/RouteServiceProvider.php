@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Http\Middleware\ResolveCart;
 use App\Models\Brand;
 use App\Models\Category;
 use App\Models\Product;
@@ -37,8 +38,19 @@ final class RouteServiceProvider extends ServiceProvider
      * admin editing a product's slug would invalidate the very URL they are
      * editing it from, and a draft has no stable slug at all.
      *
-     * These bindings are scoped to the `admin.` route-name prefix so the public
-     * slug binding is untouched.
+     * ## An explicit binding applies to every route using the parameter name
+     *
+     * `Route::bind()` is global — it fires for any `{product}` segment
+     * anywhere, regardless of what the controller asked for. That is a trap,
+     * and it bit `DELETE /wishlist/{product}`: that action takes a `string`
+     * and resolves the identifier itself so it can answer with a friendly 422,
+     * but the binder ran first, failed its slug lookup on a uuid, and turned
+     * the whole route into a 404.
+     *
+     * {@see routeWantsModel()} is the guard: a route whose controller
+     * type-hints the model gets a resolved model, and one that type-hints a
+     * string gets the raw string. The binding stays where it is useful and
+     * stops silently rewriting routes that never asked for it.
      */
     private function configureModelBindings(): void
     {
@@ -49,7 +61,12 @@ final class RouteServiceProvider extends ServiceProvider
         ];
 
         foreach ($bindings as $parameter => $model) {
-            Route::bind($parameter, function (string $value) use ($model): object {
+            Route::bind($parameter, function (string $value) use ($parameter, $model): mixed {
+                // The controller wants the identifier, not the record.
+                if (! $this->routeWantsModel($parameter, $model)) {
+                    return $value;
+                }
+
                 /*
                  * Matched on the request path rather than the route name: the
                  * name is only available once the route is resolved, and the
@@ -82,6 +99,70 @@ final class RouteServiceProvider extends ServiceProvider
         }
     }
 
+    /**
+     * Whether the current route's action actually type-hints this model for
+     * the given parameter.
+     *
+     * Read from the controller signature rather than from a list of exempt
+     * routes: a list has to be remembered on every new endpoint, and the
+     * consequence of forgetting is a 404 that looks like a routing problem
+     * rather than a binding one. The signature is the declaration of intent
+     * that is already there.
+     *
+     * Anything unresolvable — a closure route, a missing method, a reflection
+     * failure — falls back to `true`, preserving the existing behaviour for
+     * every route that was working before.
+     *
+     * @param  class-string  $model
+     */
+    private function routeWantsModel(string $parameter, string $model): bool
+    {
+        $route = request()->route();
+
+        if ($route === null) {
+            return true;
+        }
+
+        try {
+            $action = $route->getAction('uses');
+
+            $reflection = match (true) {
+                is_string($action) && str_contains($action, '@') => (function () use ($action): \ReflectionFunctionAbstract {
+                    [$class, $method] = explode('@', $action, 2);
+
+                    return new \ReflectionMethod($class, $method);
+                })(),
+                $action instanceof \Closure => new \ReflectionFunction($action),
+                default => null,
+            };
+
+            if ($reflection === null) {
+                return true;
+            }
+
+            foreach ($reflection->getParameters() as $candidate) {
+                if ($candidate->getName() !== $parameter) {
+                    continue;
+                }
+
+                $type = $candidate->getType();
+
+                if (! $type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+                    // Declared `string $product` — hand back the raw value.
+                    return false;
+                }
+
+                return is_a($type->getName(), $model, allow_string: true);
+            }
+        } catch (\Throwable) {
+            return true;
+        }
+
+        // The parameter is not in the signature at all, so nothing is expecting
+        // a particular shape; resolve as before.
+        return true;
+    }
+
     private function configureRateLimiters(): void
     {
         // Default limiter for authenticated traffic; keyed by user id so one
@@ -96,7 +177,7 @@ final class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('public', function (Request $request): Limit {
             return Limit::perMinute((int) config('api.rate_limits.public'))
                 ->by((string) $request->ip())
-                ->response(fn (): \Illuminate\Http\JsonResponse => response()->json([
+                ->response(fn (): JsonResponse => response()->json([
                     'success' => false,
                     'message' => 'Too many requests. Please slow down.',
                     'code' => 'RATE_LIMITED',
@@ -121,12 +202,12 @@ final class RouteServiceProvider extends ServiceProvider
             $user = $request->user();
 
             $key = $user !== null
-                ? $user::class . ':' . $user->getAuthIdentifier()
-                : ($request->header(\App\Http\Middleware\ResolveCart::HEADER) ?: (string) $request->ip());
+                ? $user::class.':'.$user->getAuthIdentifier()
+                : ($request->header(ResolveCart::HEADER) ?: (string) $request->ip());
 
             return Limit::perMinute((int) config('api.rate_limits.cart', 60))
                 ->by($key)
-                ->response(fn (): \Illuminate\Http\JsonResponse => response()->json([
+                ->response(fn (): JsonResponse => response()->json([
                     'success' => false,
                     'message' => 'Too many cart updates. Please slow down.',
                     'code' => 'RATE_LIMITED',
@@ -153,12 +234,12 @@ final class RouteServiceProvider extends ServiceProvider
             $user = $request->user();
 
             $key = $user !== null
-                ? $user::class . ':' . $user->getAuthIdentifier()
+                ? $user::class.':'.$user->getAuthIdentifier()
                 : ($request->route('token') ?: (string) $request->ip());
 
             return Limit::perMinute((int) config('api.rate_limits.checkout_place', 10))
                 ->by((string) $key)
-                ->response(fn (): \Illuminate\Http\JsonResponse => response()->json([
+                ->response(fn (): JsonResponse => response()->json([
                     'success' => false,
                     'message' => 'Too many attempts to place this order. Please wait a moment and try again.',
                     'code' => 'RATE_LIMITED',
@@ -183,7 +264,7 @@ final class RouteServiceProvider extends ServiceProvider
             }
 
             return Limit::perMinute((int) config('api.rate_limits.authenticated'))
-                ->by($user::class . ':' . $user->getAuthIdentifier());
+                ->by($user::class.':'.$user->getAuthIdentifier());
         });
 
         /*
@@ -200,7 +281,7 @@ final class RouteServiceProvider extends ServiceProvider
 
             return [
                 Limit::perMinute((int) config('api.rate_limits.auth'))
-                    ->by($email . '|' . $request->ip())
+                    ->by($email.'|'.$request->ip())
                     ->response(fn (): JsonResponse => self::throttledResponse(
                         'Too many attempts. Please wait before trying again.'
                     )),
@@ -222,13 +303,13 @@ final class RouteServiceProvider extends ServiceProvider
 
             return [
                 Limit::perMinute((int) config('api.rate_limits.admin_auth'))
-                    ->by($email . '|' . $request->ip())
+                    ->by($email.'|'.$request->ip())
                     ->response(fn (): JsonResponse => self::throttledResponse(
                         'Too many attempts. Please wait before trying again.'
                     )),
 
                 Limit::perMinute((int) config('api.rate_limits.admin_auth_per_ip'))
-                    ->by('admin-ip:' . $request->ip())
+                    ->by('admin-ip:'.$request->ip())
                     ->response(fn (): JsonResponse => self::throttledResponse(
                         'Too many attempts from this network.'
                     )),
@@ -244,7 +325,7 @@ final class RouteServiceProvider extends ServiceProvider
                 (int) config('api.rate_limits.password_reset_window'),
                 (int) config('api.rate_limits.password_reset'),
             )
-                ->by($email . '|' . $request->ip())
+                ->by($email.'|'.$request->ip())
                 ->response(fn (): JsonResponse => self::throttledResponse(
                     'Too many password reset requests. Please check your inbox, then try again later.'
                 ));
@@ -257,7 +338,7 @@ final class RouteServiceProvider extends ServiceProvider
                 (int) config('api.rate_limits.verification_window'),
                 (int) config('api.rate_limits.verification'),
             )
-                ->by('verify:' . $key)
+                ->by('verify:'.$key)
                 ->response(fn (): JsonResponse => self::throttledResponse(
                     'Too many verification requests. Please wait before requesting another link.'
                 ));

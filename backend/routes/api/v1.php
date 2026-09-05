@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Enums\ReportType;
 use App\Http\Controllers\Api\V1\Admin\AdminAuthController;
 use App\Http\Controllers\Api\V1\Admin\AdminManagementController;
 use App\Http\Controllers\Api\V1\Admin\AttributeController;
@@ -10,12 +11,14 @@ use App\Http\Controllers\Api\V1\Admin\BrandController;
 use App\Http\Controllers\Api\V1\Admin\CategoryController;
 use App\Http\Controllers\Api\V1\Admin\CmsPageController;
 use App\Http\Controllers\Api\V1\Admin\CouponController as AdminCouponController;
+use App\Http\Controllers\Api\V1\Admin\DashboardController;
 use App\Http\Controllers\Api\V1\Admin\HomepageController;
 use App\Http\Controllers\Api\V1\Admin\InventoryController;
 use App\Http\Controllers\Api\V1\Admin\NotificationController as AdminNotificationController;
 use App\Http\Controllers\Api\V1\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\V1\Admin\PaymentController as AdminPaymentController;
 use App\Http\Controllers\Api\V1\Admin\ProductController;
+use App\Http\Controllers\Api\V1\Admin\ReportController;
 use App\Http\Controllers\Api\V1\Admin\RoleController;
 use App\Http\Controllers\Api\V1\Admin\SettingsManagementController;
 use App\Http\Controllers\Api\V1\Admin\ShippingController;
@@ -1052,6 +1055,63 @@ Route::prefix('admin')->name('admin.')->group(function (): void {
                     ->where('payment', '[0-9a-fA-F-]{36}')
                     ->middleware('permission:manage_payments')
                     ->name('verify');
+            });
+
+            /*
+             * The dashboard.
+             *
+             * Everything here is a cached aggregate keyed by the requested
+             * range — see ReportCache. `view_reports` alone is sufficient:
+             * these endpoints only read, and the figures they expose are
+             * summaries a manager needs without also holding the permissions
+             * to edit orders or products.
+             */
+            Route::prefix('dashboard')->name('dashboard.')->group(function (): void {
+                Route::get('/', [DashboardController::class, 'index'])
+                    ->middleware('permission:view_reports,manage_reports')
+                    ->name('index');
+
+                Route::get('/metrics', [DashboardController::class, 'metrics'])
+                    ->middleware('permission:view_reports,manage_reports')
+                    ->name('metrics');
+
+                Route::get('/charts', [DashboardController::class, 'charts'])
+                    ->middleware('permission:view_reports,manage_reports')
+                    ->name('charts');
+
+                Route::get('/filters', [DashboardController::class, 'filters'])
+                    ->middleware('permission:view_reports,manage_reports')
+                    ->name('filters');
+            });
+
+            /*
+             * Reports and their exports.
+             *
+             * The literal `/reports` index is declared before `/{report}` so
+             * it is not captured as a report name. The wildcard is constrained
+             * to the enum's own values rather than left open, so an unknown
+             * name is a 404 from the router instead of reaching the controller.
+             */
+            Route::prefix('reports')->name('reports.')->group(function (): void {
+                Route::get('/', [ReportController::class, 'index'])
+                    ->middleware('permission:view_reports,manage_reports')
+                    ->name('index');
+
+                Route::get('/{report}', [ReportController::class, 'show'])
+                    ->where('report', implode('|', ReportType::values()))
+                    ->middleware('permission:view_reports,manage_reports')
+                    ->name('show');
+
+                /*
+                 * Exporting needs `manage_reports` rather than `view_reports`.
+                 * Reading a summary on screen and walking out with a file of
+                 * every customer's email and lifetime value are different
+                 * acts, and the second is the one worth gating separately.
+                 */
+                Route::get('/{report}/export', [ReportController::class, 'export'])
+                    ->where('report', implode('|', ReportType::values()))
+                    ->middleware('permission:manage_reports')
+                    ->name('export');
             });
 
             /*

@@ -65,6 +65,24 @@ final class HtmlSanitiser
             $html = mb_substr($html, 0, $maxLength);
         }
 
+        /*
+         * Strip C0 control characters before the document is parsed.
+         *
+         * A null byte inside an attribute truncates it at the parser level:
+         * `href="java\0script:alert(1)"` reaches the DOM as `href="java"`, and
+         * libxml discards the element's text along with it. The payload never
+         * reaches isSafeUrl() to be judged, and the operator silently loses
+         * their link text.
+         *
+         * Browsers ignore these characters when resolving a scheme, so removing
+         * them here makes the string the sanitiser inspects the same string a
+         * browser would act on — which is the property the whole allowlist
+         * depends on. Tab, newline, and carriage return are kept: they are
+         * legitimate whitespace in prose, and isSafeUrl() strips them again
+         * when reading a scheme.
+         */
+        $html = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $html) ?? $html;
+
         $document = $this->parse($html);
 
         if ($document === null) {
@@ -115,7 +133,7 @@ final class HtmlSanitiser
                 $text = mb_substr($text, 0, $lastSpace);
             }
 
-            $text = rtrim($text, " \t\n\r\0\x0B.,;:") . '…';
+            $text = rtrim($text, " \t\n\r\0\x0B.,;:").'…';
         }
 
         return $text;
@@ -136,7 +154,7 @@ final class HtmlSanitiser
         $previous = libxml_use_internal_errors(true);
 
         $loaded = $document->loadHTML(
-            '<?xml encoding="UTF-8"><body>' . $html . '</body>',
+            '<?xml encoding="UTF-8"><body>'.$html.'</body>',
             // LIBXML_NONET: refuse network access while parsing. Without it a
             // crafted doctype could make the parser fetch an external entity —
             // server-side request forgery triggered by saving a page.
@@ -348,14 +366,26 @@ final class HtmlSanitiser
          */
         $normalised = strtolower(preg_replace('/[\x00-\x20]+/', '', $url) ?? $url);
 
-        if (str_starts_with($normalised, '#') || str_starts_with($normalised, '/')) {
-            return true;
-        }
-
-        // Protocol-relative (//evil.test) inherits the page scheme and is a
-        // fully external navigation; treat it as needing an explicit scheme.
+        /*
+         * Protocol-relative (`//evil.test`) is checked *before* the
+         * root-relative case, not after.
+         *
+         * `//evil.test` also starts with `/`, so a root-relative check placed
+         * first returns true and this one never runs — which is exactly the
+         * bug that let a protocol-relative phishing link through. The order of
+         * these two blocks is the whole check.
+         *
+         * Such a URL inherits the page's scheme and navigates fully
+         * off-origin, so it needs an explicit allowlisted scheme like any
+         * other external link.
+         */
         if (str_starts_with($normalised, '//')) {
             return false;
+        }
+
+        // A fragment or a root-relative path cannot change origin or execute.
+        if (str_starts_with($normalised, '#') || str_starts_with($normalised, '/')) {
+            return true;
         }
 
         if (! str_contains($normalised, ':')) {

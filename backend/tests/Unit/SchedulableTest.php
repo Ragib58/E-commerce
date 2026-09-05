@@ -107,7 +107,16 @@ final class SchedulableTest extends TestCase
     #[Test]
     public function it_reports_the_next_moment_visibility_changes(): void
     {
-        $endsAt = Carbon::now()->addHours(2);
+        /*
+         * Truncated to the second before saving.
+         *
+         * `ends_at` is a MySQL `timestamp`, which stores no fractional part, so
+         * a value carrying microseconds comes back from the database a fraction
+         * of a second earlier than it went in. Comparing the pre-save Carbon to
+         * the post-save one then fails on a difference the column cannot
+         * represent — a test artefact, not a scheduling bug.
+         */
+        $endsAt = Carbon::now()->addHours(2)->startOfSecond();
 
         // Used to cap a cache TTL: caching a flash sale for ten minutes when it
         // ends in two would leave it advertised after it closed.

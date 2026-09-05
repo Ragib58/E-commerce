@@ -73,10 +73,44 @@ const nextConfig: NextConfig = {
   },
 
   async headers() {
+    /**
+     * Content Security Policy.
+     *
+     * The nginx config defers CSP to this layer, on the reasoning that only
+     * the app knows its own script and style origins — so it has to actually
+     * be defined here, or the deferral leaves the site with none.
+     *
+     * `'unsafe-inline'` on styles is required by Next.js, which injects
+     * critical CSS inline. Scripts additionally need `'unsafe-eval'` in
+     * development for React Refresh; production drops it, so the weaker
+     * policy never ships.
+     *
+     * `connect-src` includes the API origin because the browser calls Laravel
+     * cross-origin. `frame-ancestors 'none'` is the modern replacement for
+     * X-Frame-Options, which is kept alongside it for older browsers.
+     */
+    const isDev = process.env.NODE_ENV !== 'production';
+
+    const csp = [
+      "default-src 'self'",
+      `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`,
+      "style-src 'self' 'unsafe-inline'",
+      // data: and blob: cover inlined placeholders and next/image output.
+      `img-src 'self' data: blob: ${apiOrigin}`,
+      "font-src 'self' data:",
+      `connect-src 'self' ${apiOrigin}${isDev ? ' ws: wss:' : ''}`,
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+      ...(isDev ? [] : ['upgrade-insecure-requests']),
+    ].join('; ');
+
     return [
       {
         source: '/:path*',
         headers: [
+          { key: 'Content-Security-Policy', value: csp },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },

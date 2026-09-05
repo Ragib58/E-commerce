@@ -85,7 +85,21 @@ final class CmsPageResource extends JsonResource
                     fn (): ?string => $this->ends_at?->toIso8601String(),
                 ),
                 'window_state' => $this->when($loaded('starts_at'), fn (): string => $this->windowState()),
-                'created_at' => $this->created_at?->toIso8601String(),
+
+                /*
+                 * Guarded like every other optional column above.
+                 *
+                 * The footer index selects a narrow column list on purpose —
+                 * it must not ship six full policy documents to render six
+                 * links — and `created_at` is not in it. Reading it
+                 * unconditionally threw a MissingAttributeException under
+                 * `Model::shouldBeStrict()`, turning the whole page index into
+                 * a 500.
+                 */
+                'created_at' => $this->when(
+                    $loaded('created_at'),
+                    fn (): ?string => $this->created_at?->toIso8601String(),
+                ),
             ]),
         ];
     }

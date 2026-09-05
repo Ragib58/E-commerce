@@ -15,9 +15,11 @@ use App\Events\StockLevelLow;
 use App\Listeners\InvalidateCatalogCache;
 use App\Listeners\InvalidateContentCache;
 use App\Listeners\InvalidateFrontendCache;
+use App\Listeners\InvalidateReportingCache;
 use App\Listeners\SendLowStockNotification;
 use App\Listeners\SendOrderNotifications;
 use App\Listeners\SendWelcomeNotification;
+use App\Services\Reporting\ReportCache;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\URL;
@@ -28,7 +30,16 @@ final class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        /*
+         * Bound here rather than in the deferred DomainServiceProvider.
+         *
+         * InvalidateReportingCache is resolved by the event dispatcher during
+         * boot, and resolving anything DomainServiceProvider provides is what
+         * forces that provider to load — so registering ReportCache there
+         * would un-defer the whole domain layer on every request that fires an
+         * order or stock event.
+         */
+        $this->app->singleton(ReportCache::class);
     }
 
     public function boot(): void
@@ -123,5 +134,22 @@ final class AppServiceProvider extends ServiceProvider
         Event::listen(StockLevelLow::class, SendLowStockNotification::class);
 
         Event::listen(CustomerRegistered::class, SendWelcomeNotification::class);
+
+        /*
+         * Dashboard and report figures are cached aggregates over orders,
+         * payments, stock, and customers — so anything that moves one of those
+         * makes them stale.
+         *
+         * All five events route to the same handler because there is no useful
+         * partial invalidation: one new order changes total sales, today's
+         * sales, the order count, several chart series, and a report's totals
+         * row. See InvalidateReportingCache for why dropping the whole tag is
+         * the right trade.
+         */
+        Event::listen(OrderPlaced::class, InvalidateReportingCache::class);
+        Event::listen(OrderStatusChanged::class, InvalidateReportingCache::class);
+        Event::listen(StockAdjusted::class, InvalidateReportingCache::class);
+        Event::listen(CustomerRegistered::class, InvalidateReportingCache::class);
+        Event::listen(CatalogChanged::class, InvalidateReportingCache::class);
     }
 }

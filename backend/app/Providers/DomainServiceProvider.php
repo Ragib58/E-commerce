@@ -20,6 +20,11 @@ use App\Services\MediaService;
 use App\Services\NotificationPreferenceService;
 use App\Services\PaymentService;
 use App\Services\ProductService;
+use App\Services\Reporting\ChartService;
+use App\Services\Reporting\DashboardService;
+use App\Services\Reporting\ExportService;
+use App\Services\Reporting\ReportService;
+use App\Services\Reporting\RevenueScope;
 use App\Services\SettingsService;
 use App\Services\ShippingZoneService;
 use App\Services\VariantService;
@@ -108,6 +113,25 @@ final class DomainServiceProvider extends ServiceProvider implements DeferrableP
         $this->app->singleton(ShippingZoneService::class);
         $this->app->singleton(CouponService::class);
         $this->app->singleton(NotificationPreferenceService::class);
+
+        /*
+         * Reporting.
+         *
+         * Singletons for the same reason as the services above: one dashboard
+         * request runs a dozen aggregates through them, and DashboardService
+         * in particular memoises per-request figures on the instance, which a
+         * fresh object per injection point would discard.
+         *
+         * ReportCache is deliberately absent — it is bound in
+         * AppServiceProvider instead, because the event listener that flushes
+         * it resolves during boot and would force this deferred provider to
+         * load on every request. See the note there.
+         */
+        $this->app->singleton(RevenueScope::class);
+        $this->app->singleton(DashboardService::class);
+        $this->app->singleton(ChartService::class);
+        $this->app->singleton(ReportService::class);
+        $this->app->singleton(ExportService::class);
     }
 
     /**
@@ -136,6 +160,11 @@ final class DomainServiceProvider extends ServiceProvider implements DeferrableP
             ShippingZoneService::class,
             CouponService::class,
             NotificationPreferenceService::class,
+            RevenueScope::class,
+            DashboardService::class,
+            ChartService::class,
+            ReportService::class,
+            ExportService::class,
         ];
     }
 }
